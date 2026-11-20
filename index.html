@@ -606,15 +606,85 @@
         }
       };
 
+      // Вспомогательные функции для работы с датами маршрута
+      const toDateInputValue = (d) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
+
+      // Умная дата по умолчанию: если >= 15:00 — завтра, иначе сегодня
+      const getSmartDefaultDate = () => {
+        const d = new Date();
+        if (d.getHours() >= 15) {
+          d.setDate(d.getDate() + 1);
+        }
+        return toDateInputValue(d);
+      };
+
+      const getTodayDateStr = () => toDateInputValue(new Date());
+
+      const getTomorrowDateStr = () => {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        return toDateInputValue(d);
+      };
+
+      // Дата текущего маршрута (умная дата по умолчанию)
+      const [routeDate, setRouteDate] = useState(() => getSmartDefaultDate());
+
+      // История маршрутов (хранится в expert_app_route_history_v1)
+      const [routeHistory, setRouteHistory] = useState(() => {
+        try {
+          const raw = localStorage.getItem('expert_app_route_history_v1');
+          return raw ? JSON.parse(raw) : {};
+        } catch (e) {
+          return {};
+        }
+      });
+
+      useEffect(() => {
+        try {
+          localStorage.setItem('expert_app_route_history_v1', JSON.stringify(routeHistory));
+        } catch (e) {}
+      }, [routeHistory]);
+
+      const [showHistoryModal, setShowHistoryModal] = useState(false);
+      const [historyMonthFilter, setHistoryMonthFilter] = useState('all');
+      const [saveToast, setSaveToast] = useState('');
+
+      // Настройки старта и финиша (по умолчанию старт 'none', возврат false)
       const [startType, setStartType] = useState(() => {
-        return localStorage.getItem('expert_route_start_type') || 'current'; // 'current' | 'custom'
+        try {
+          const savedSettings = localStorage.getItem('expert_route_start_settings');
+          if (savedSettings) {
+            const parsed = JSON.parse(savedSettings);
+            if (parsed && parsed.startMode) return parsed.startMode;
+          }
+        } catch (e) {}
+        return localStorage.getItem('expert_route_start_type') || 'none';
       });
 
       const [customStart, setCustomStart] = useState(() => {
+        try {
+          const savedSettings = localStorage.getItem('expert_route_start_settings');
+          if (savedSettings) {
+            const parsed = JSON.parse(savedSettings);
+            if (parsed && parsed.startAddress !== undefined) return parsed.startAddress;
+          }
+        } catch (e) {}
         return localStorage.getItem('expert_route_custom_start') || '';
       });
 
       const [returnToStart, setReturnToStart] = useState(() => {
+        try {
+          const savedSettings = localStorage.getItem('expert_route_start_settings');
+          if (savedSettings) {
+            const parsed = JSON.parse(savedSettings);
+            if (parsed && parsed.returnToStart !== undefined) return !!parsed.returnToStart;
+          }
+        } catch (e) {}
         return localStorage.getItem('expert_route_return') === 'true';
       });
 
@@ -980,6 +1050,11 @@
 
       useEffect(() => {
         try {
+          localStorage.setItem('expert_route_start_settings', JSON.stringify({
+            startMode: startType,
+            startAddress: customStart,
+            returnToStart: returnToStart
+          }));
           localStorage.setItem('expert_route_start_type', startType);
           localStorage.setItem('expert_route_custom_start', customStart);
           localStorage.setItem('expert_route_return', returnToStart ? 'true' : 'false');
@@ -1408,7 +1483,7 @@
             }
           }
         } else {
-          if (confirm('Начать новый день? Все загруженные скриншоты и список точек маршрута будут очищены.')) {
+          if (confirm('Начать новый маршрут? Все загруженные скриншоты и список точек маршрута будут очищены.')) {
             images.forEach(img => {
               if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
             });
@@ -1418,9 +1493,178 @@
             setOcrError('');
             setShowRawText(false);
             setOcrEngineUsed(null);
+            setRouteDate(getSmartDefaultDate());
             localStorage.removeItem('expert_route_points');
           }
         }
+      };
+
+      // Сохранение маршрута в историю
+      const handleSaveRouteToHistory = (silent = false) => {
+        if (!points || points.length === 0) {
+          if (!silent) alert('Маршрут пуст. Добавьте или распознайте хотя бы одну точку.');
+          return false;
+        }
+        if (!routeDate) {
+          if (!silent) alert('Выберите дату маршрута.');
+          return false;
+        }
+
+        const validPoints = points.filter(p => (p.address && p.address.trim().length > 0) || p.type === 'М' || p.type === 'Д');
+        if (validPoints.length === 0) {
+          if (!silent) alert('В маршруте нет заполненных адресов точек.');
+          return false;
+        }
+
+        const record = {
+          date: routeDate,
+          updatedAt: new Date().toISOString(),
+          userPhone: localStorage.getItem('expert_app_user_phone') || '',
+          startMode: startType,
+          startAddress: startType === 'custom' ? customStart : '',
+          returnToStart: startType !== 'none' ? returnToStart : false,
+          points: points.map((p, idx) => ({
+            order: idx + 1,
+            address: p.address || '',
+            time: p.time || '',
+            taskType: p.type || p.taskType || ''
+          }))
+        };
+
+        setRouteHistory(prev => {
+          const updated = {
+            ...prev,
+            [routeDate]: record
+          };
+          try {
+            localStorage.setItem('expert_app_route_history_v1', JSON.stringify(updated));
+          } catch (e) {}
+          return updated;
+        });
+
+        if (!silent) {
+          setSaveToast(`Маршрут на ${routeDate} сохранён`);
+          setTimeout(() => setSaveToast(''), 3000);
+        }
+        return true;
+      };
+
+      // Загрузка маршрута из истории в редактор
+      const handleLoadRouteFromHistory = (dateKey) => {
+        const entry = routeHistory[dateKey];
+        if (!entry) return;
+
+        if (points.length > 0) {
+          if (!confirm(`Загрузить маршрут за ${dateKey}? Текущий список точек на экране будет заменён.`)) {
+            return;
+          }
+        }
+
+        const restoredPoints = (entry.points || []).map((p, idx) => ({
+          id: 'point_' + Date.now() + '_' + idx,
+          address: p.address || '',
+          time: p.time || '',
+          type: p.taskType || p.type || '',
+          timeMode: null
+        }));
+
+        setPoints(restoredPoints);
+        setRouteDate(entry.date || dateKey);
+
+        if (entry.startMode) setStartType(entry.startMode);
+        if (entry.startAddress !== undefined) setCustomStart(entry.startAddress);
+        if (entry.returnToStart !== undefined) setReturnToStart(!!entry.returnToStart);
+
+        setShowHistoryModal(false);
+      };
+
+      // Удаление записи одного дня из истории
+      const handleDeleteRouteFromHistory = (dateKey) => {
+        if (confirm(`Удалить маршрут за ${dateKey} из истории?`)) {
+          setRouteHistory(prev => {
+            const copy = { ...prev };
+            delete copy[dateKey];
+            try {
+              localStorage.setItem('expert_app_route_history_v1', JSON.stringify(copy));
+            } catch (e) {}
+            return copy;
+          });
+        }
+      };
+
+      // Экспорт истории в JSON
+      const handleExportJson = () => {
+        const allDates = Object.keys(routeHistory).sort((a, b) => b.localeCompare(a));
+        const datesToExport = historyMonthFilter === 'all'
+          ? allDates
+          : allDates.filter(d => d.startsWith(historyMonthFilter));
+
+        if (datesToExport.length === 0) {
+          alert('Нет сохранённых маршрутов для экспорта.');
+          return;
+        }
+
+        const exportData = {};
+        datesToExport.forEach(d => {
+          exportData[d] = routeHistory[d];
+        });
+
+        const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(exportData, null, 2));
+        const fileName = `routes_${historyMonthFilter === 'all' ? 'all' : historyMonthFilter}.json`;
+        const dlAnchor = document.createElement('a');
+        dlAnchor.setAttribute('href', dataStr);
+        dlAnchor.setAttribute('download', fileName);
+        document.body.appendChild(dlAnchor);
+        dlAnchor.click();
+        dlAnchor.remove();
+      };
+
+      // Экспорт истории в CSV (Excel с UTF-8 BOM и разделителем ;)
+      const handleExportCsv = () => {
+        const allDates = Object.keys(routeHistory).sort((a, b) => b.localeCompare(a));
+        const datesToExport = historyMonthFilter === 'all'
+          ? allDates
+          : allDates.filter(d => d.startsWith(historyMonthFilter));
+
+        if (datesToExport.length === 0) {
+          alert('Нет сохранённых маршрутов для экспорта.');
+          return;
+        }
+
+        const rows = [
+          ['Дата', '№', 'Тип', 'Время', 'Адрес', 'Старт', 'Возврат']
+        ];
+
+        datesToExport.forEach(d => {
+          const entry = routeHistory[d];
+          if (!entry) return;
+          const startStr = entry.startMode === 'none' ? 'Нет' : entry.startMode === 'custom' ? (entry.startAddress || 'Адрес') : 'Текущее местоположение';
+          const returnStr = entry.returnToStart ? 'Да' : 'Нет';
+
+          (entry.points || []).forEach(p => {
+            rows.push([
+              entry.date,
+              String(p.order),
+              p.taskType || '',
+              p.time || '',
+              `"${(p.address || '').replace(/"/g, '""')}"`,
+              `"${startStr.replace(/"/g, '""')}"`,
+              returnStr
+            ]);
+          });
+        });
+
+        const csvContent = '\uFEFF' + rows.map(r => r.join(';')).join('\r\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const fileName = `routes_${historyMonthFilter === 'all' ? 'all' : historyMonthFilter}.csv`;
+        const dlAnchor = document.createElement('a');
+        dlAnchor.setAttribute('href', url);
+        dlAnchor.setAttribute('download', fileName);
+        document.body.appendChild(dlAnchor);
+        dlAnchor.click();
+        dlAnchor.remove();
+        URL.revokeObjectURL(url);
       };
 
       // Управление точками маршрута
@@ -1516,6 +1760,11 @@
         if (validPoints.length === 0) {
           alert('Пожалуйста, заполните адреса точек маршрута.');
           return;
+        }
+
+        // Автоматическое сохранение маршрута в историю (в режиме Эксперта)
+        if (appRole === 'expert' && validPoints.length > 0) {
+          handleSaveRouteToHistory(true);
         }
 
         const segments = [];
@@ -1686,6 +1935,32 @@
                   </button>
                 </div>
 
+                {/* Кнопка открытия Истории маршрутов */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowHistoryModal(true);
+                  }}
+                  className={`w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border text-xs sm:text-sm font-bold flex items-center justify-between gap-2 transition-all shadow-sm mb-3 ${t(
+                    'bg-[#1E2125] border-[#FFB300]/40 text-[#FFB300] hover:bg-[#33363B]',
+                    'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100',
+                    'bg-pink-50 border-pink-300 text-pink-800 hover:bg-pink-100',
+                    'bg-[#162032] border-sky-400/40 text-blue-100 hover:bg-[#1E3A5F]',
+                    'bg-emerald-50 border-emerald-300 text-emerald-900 hover:bg-emerald-100',
+                    'bg-[#221A17] border-[#D7B399]/40 text-[#D7B399] hover:bg-[#382B26]',
+                    'bg-slate-50 border-slate-300 text-slate-800 hover:bg-slate-100'
+                  )}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span>📅</span>
+                    <span>История маршрутов</span>
+                  </div>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-white/10 border border-current">
+                    {Object.keys(routeHistory).length}
+                  </span>
+                </button>
+
                 {/* Раздел: Управление данными */}
                 <div className={`mt-4 pt-4 border-t ${t('border-gray-700', 'border-gray-200', 'border-pink-200', 'border-blue-200', 'border-emerald-200', 'border-[#D7CCC8]', 'border-gray-200')}`}>
                   <h4 className={`text-xs font-bold uppercase tracking-wider mb-2.5 ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
@@ -1724,12 +1999,16 @@
                       <span>Сбросить кэш координат карты</span>
                     </button>
 
-                    {/* Кнопка полного сброса приложения */}
+                    {/* Кнопка полного сброса приложения (с сохранением истории маршрутов) */}
                     <button
                       type="button"
                       onClick={() => {
-                        if (window.confirm('Удалить все сохранённые точки, имена вкладок и настройки?')) {
+                        if (window.confirm('Сбросить все текущие точки, вкладки и настройки? История маршрутов сохранится и НЕ будет удалена.')) {
+                          const savedHistory = localStorage.getItem('expert_app_route_history_v1');
                           localStorage.clear();
+                          if (savedHistory) {
+                            localStorage.setItem('expert_app_route_history_v1', savedHistory);
+                          }
                           window.location.reload();
                         }
                       }}
@@ -1739,7 +2018,7 @@
                         'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
                         'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
                         'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
-                        'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
+                        'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
                         'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200'
                       )}`}
                     >
@@ -1754,6 +2033,305 @@
                     type="button"
                     onClick={() => setShowSettings(false)} 
                     className={`min-h-[48px] px-6 py-2 text-sm font-bold rounded-xl transition-all ${t('bg-[#FFB300] text-black hover:bg-[#FFA000]', 'bg-amber-600 text-white hover:bg-amber-700', 'bg-pink-500 text-white hover:bg-pink-600', 'bg-blue-600 text-white hover:bg-blue-700', 'bg-emerald-600 text-white hover:bg-emerald-700', 'bg-[#6D4C41] text-white hover:bg-[#5D4037]', 'bg-[#C62828] text-white hover:bg-[#B71C1C]')}`}
+                  >
+                    ЗАКРЫТЬ
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Модальное окно: История маршрутов */}
+          {showHistoryModal && (
+            <div 
+              className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/75 backdrop-blur-sm animate-fade-in"
+              onClick={() => setShowHistoryModal(false)}
+            >
+              <div 
+                className={`w-full max-w-2xl max-h-[92vh] flex flex-col rounded-2xl border-2 shadow-2xl overflow-hidden ${t(
+                  'bg-[#1E2125] border-gray-700 text-gray-100',
+                  'bg-white border-slate-300 text-slate-900',
+                  'bg-white border-pink-300 text-pink-950',
+                  'bg-[#10192A] border-[#253652] text-blue-50',
+                  'bg-white border-emerald-300 text-emerald-950',
+                  'bg-[#1F1714] border-[#3E2F2A] text-[#F5EBE6]',
+                  'bg-white border-slate-300 text-slate-900'
+                )}`}
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Шапка модального окна истории */}
+                <div className={`p-4 border-b flex items-center justify-between ${t(
+                  'bg-[#282B30] border-gray-700',
+                  'bg-slate-50 border-slate-200',
+                  'bg-pink-50 border-pink-200',
+                  'bg-[#162032] border-[#253652]',
+                  'bg-emerald-50 border-emerald-200',
+                  'bg-[#241C19] border-[#3E2F2A]',
+                  'bg-slate-50 border-slate-200'
+                )}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">📅</span>
+                    <div>
+                      <h3 className="text-base font-bold">История маршрутов</h3>
+                      <div className="text-xs opacity-70">
+                        Всего записей: {Object.keys(routeHistory).length} дн.
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowHistoryModal(false)}
+                    className="p-1.5 opacity-70 hover:opacity-100 min-h-[44px] min-w-[44px] flex items-center justify-center text-lg font-bold"
+                    title="Закрыть"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Фильтр по месяцу */}
+                <div className={`p-3 border-b flex items-center justify-between gap-3 flex-wrap ${t(
+                  'bg-[#1E2125] border-gray-700',
+                  'bg-white border-slate-200',
+                  'bg-white border-pink-100',
+                  'bg-[#131D31] border-[#253652]',
+                  'bg-white border-emerald-100',
+                  'bg-[#1C1513] border-[#3E2F2A]',
+                  'bg-white border-slate-200'
+                )}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold opacity-75">Месяц:</span>
+                    <select
+                      value={historyMonthFilter}
+                      onChange={(e) => setHistoryMonthFilter(e.target.value)}
+                      className={`min-h-[38px] px-3 py-1.5 rounded-lg border text-xs sm:text-sm font-semibold focus:outline-none ${t(
+                        'bg-[#282B30] border-gray-600 text-gray-100 focus:border-blue-500',
+                        'bg-slate-50 border-slate-300 text-slate-800 focus:border-blue-600',
+                        'bg-pink-50 border-pink-200 text-pink-900 focus:border-pink-500',
+                        'bg-[#162032] border-[#253652] text-blue-100 focus:border-sky-400',
+                        'bg-emerald-50 border-emerald-200 text-emerald-900 focus:border-emerald-600',
+                        'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] focus:border-[#D7B399]',
+                        'bg-slate-50 border-slate-300 text-slate-800 focus:border-blue-600'
+                      )}`}
+                    >
+                      <option value="all">Все месяцы ({Object.keys(routeHistory).length})</option>
+                      {Array.from(new Set(Object.keys(routeHistory).map(d => d.substring(0, 7))))
+                        .sort((a, b) => b.localeCompare(a))
+                        .map(ym => {
+                          const [y, m] = ym.split('-');
+                          const dateObj = new Date(Number(y), Number(m) - 1, 1);
+                          const mName = dateObj.toLocaleString('ru-RU', { month: 'long' });
+                          const label = `${mName.charAt(0).toUpperCase() + mName.slice(1)} ${y}`;
+                          const count = Object.keys(routeHistory).filter(d => d.startsWith(ym)).length;
+                          return (
+                            <option key={ym} value={ym}>
+                              {label} ({count})
+                            </option>
+                          );
+                        })}
+                    </select>
+                  </div>
+                  <div className="text-xs opacity-60">
+                    Показано дней: {
+                      (historyMonthFilter === 'all'
+                        ? Object.keys(routeHistory)
+                        : Object.keys(routeHistory).filter(d => d.startsWith(historyMonthFilter))
+                      ).length
+                    }
+                  </div>
+                </div>
+
+                {/* Список маршрутов (скроллируемый контейнер) */}
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 modern-scroll">
+                  {(() => {
+                    const allDates = Object.keys(routeHistory).sort((a, b) => b.localeCompare(a));
+                    const visibleDates = historyMonthFilter === 'all'
+                      ? allDates
+                      : allDates.filter(d => d.startsWith(historyMonthFilter));
+
+                    if (visibleDates.length === 0) {
+                      return (
+                        <div className="text-center py-12 px-4 opacity-70">
+                          <div className="text-4xl mb-3">📭</div>
+                          <div className="text-sm font-semibold mb-1">В истории пока нет маршрутов</div>
+                          <div className="text-xs max-w-sm mx-auto opacity-75">
+                            Маршруты сохраняются автоматически при нажатии «Открыть маршрут в Яндекс Картах» или вручную по кнопке «Сохранить».
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return visibleDates.map(dateKey => {
+                      const entry = routeHistory[dateKey];
+                      if (!entry) return null;
+
+                      const [y, m, d] = dateKey.split('-');
+                      const dateObj = new Date(Number(y), Number(m) - 1, Number(d));
+                      const weekday = dateObj.toLocaleString('ru-RU', { weekday: 'short' });
+                      const formattedDate = `${d}.${m}.${y}`;
+                      const pointsCount = entry.points ? entry.points.length : 0;
+
+                      return (
+                        <div
+                          key={dateKey}
+                          className={`p-3.5 rounded-xl border transition-all ${t(
+                            'bg-[#282B30] border-gray-700 hover:border-gray-600',
+                            'bg-slate-50 border-slate-200 hover:border-slate-300',
+                            'bg-pink-50/50 border-pink-200 hover:border-pink-300',
+                            'bg-[#162032] border-[#253652] hover:border-sky-500/40',
+                            'bg-emerald-50/50 border-emerald-200 hover:border-emerald-300',
+                            'bg-[#241C19] border-[#3E2F2A] hover:border-[#6D4C41]',
+                            'bg-slate-50 border-slate-200 hover:border-slate-300'
+                          )}`}
+                        >
+                          <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-sm sm:text-base">{formattedDate}</span>
+                              <span className="text-xs uppercase font-bold px-2 py-0.5 rounded bg-white/10 opacity-80">
+                                {weekday}
+                              </span>
+                              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${t(
+                                'bg-[#FFB300]/20 text-[#FFB300]',
+                                'bg-amber-100 text-amber-800',
+                                'bg-pink-100 text-pink-700',
+                                'bg-sky-500/20 text-sky-300',
+                                'bg-emerald-100 text-emerald-800',
+                                'bg-[#382B26] text-[#D7B399]',
+                                'bg-amber-100 text-amber-800'
+                              )}`}>
+                                {pointsCount} {pointsCount === 1 ? 'точка' : pointsCount < 5 ? 'точки' : 'точек'}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 ml-auto">
+                              <button
+                                type="button"
+                                onClick={() => handleLoadRouteFromHistory(dateKey)}
+                                className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1 shadow-sm ${t(
+                                  'bg-[#FFB300]/20 border-[#FFB300]/50 text-[#FFB300] hover:bg-[#FFB300]/30',
+                                  'bg-amber-100 border-amber-300 text-amber-900 hover:bg-amber-200',
+                                  'bg-pink-100 border-pink-300 text-pink-800 hover:bg-pink-200',
+                                  'bg-[#162238] border-sky-400/50 text-sky-300 hover:bg-[#1E3A5F]',
+                                  'bg-emerald-100 border-emerald-300 text-emerald-900 hover:bg-emerald-200',
+                                  'bg-[#382B26] border-[#D7B399]/50 text-[#D7B399] hover:bg-[#4E342E]',
+                                  'bg-amber-100 border-amber-300 text-amber-900 hover:bg-amber-200'
+                                )}`}
+                                title="Загрузить маршрут этого дня в редактор"
+                              >
+                                <span>📂</span>
+                                <span>Открыть</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRouteFromHistory(dateKey)}
+                                className="min-h-[38px] w-9 rounded-lg border border-rose-500/30 text-rose-400 hover:bg-rose-500/20 active:bg-rose-500/30 flex items-center justify-center text-xs font-bold transition-all shadow-sm"
+                                title="Удалить этот день из истории"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Компактный список адресов */}
+                          {entry.points && entry.points.length > 0 && (
+                            <div className={`mt-2 pt-2 border-t text-xs space-y-1 ${t(
+                              'border-gray-700/60 text-gray-300',
+                              'border-slate-200 text-slate-700',
+                              'border-pink-200/60 text-pink-900',
+                              'border-[#253652]/70 text-blue-200',
+                              'border-emerald-200/60 text-emerald-900',
+                              'border-[#3E2F2A]/70 text-[#D7B399]',
+                              'border-slate-200 text-slate-700'
+                            )}`}>
+                              {entry.points.slice(0, 5).map((pt, pIdx) => (
+                                <div key={pIdx} className="flex items-center gap-1.5 truncate">
+                                  <span className="font-mono opacity-50 w-4 text-right flex-shrink-0">{pIdx + 1}.</span>
+                                  {pt.taskType && (
+                                    <span className="font-bold flex-shrink-0 text-[11px] px-1 rounded bg-white/10">
+                                      [{pt.taskType}]
+                                    </span>
+                                  )}
+                                  {pt.time && (
+                                    <span className="font-semibold flex-shrink-0 text-[11px] opacity-80">
+                                      {pt.time}
+                                    </span>
+                                  )}
+                                  <span className="truncate">{pt.address || 'Монтаж без адреса'}</span>
+                                </div>
+                              ))}
+                              {entry.points.length > 5 && (
+                                <div className="text-[11px] opacity-60 italic pt-0.5">
+                                  ... и ещё {entry.points.length - 5} {entry.points.length - 5 === 1 ? 'адрес' : 'адресов'}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+
+                {/* Блок экспорта внизу окна */}
+                <div className={`p-3.5 border-t flex items-center justify-between gap-2 flex-wrap ${t(
+                  'bg-[#282B30] border-gray-700',
+                  'bg-slate-50 border-slate-200',
+                  'bg-pink-50 border-pink-200',
+                  'bg-[#162032] border-[#253652]',
+                  'bg-emerald-50 border-emerald-200',
+                  'bg-[#241C19] border-[#3E2F2A]',
+                  'bg-slate-50 border-slate-200'
+                )}`}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleExportJson}
+                      className={`min-h-[44px] px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm ${t(
+                        'bg-[#1E2125] border-gray-600 text-gray-200 hover:bg-[#33363B]',
+                        'bg-white border-slate-300 text-slate-800 hover:bg-slate-100',
+                        'bg-white border-pink-200 text-pink-800 hover:bg-pink-50',
+                        'bg-[#0B132B] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]',
+                        'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50',
+                        'bg-[#16110F] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]',
+                        'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
+                      )}`}
+                      title="Экспорт в формате JSON для автоматической обработки"
+                    >
+                      <span>📥</span>
+                      <span>Экспорт JSON</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleExportCsv}
+                      className={`min-h-[44px] px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm ${t(
+                        'bg-[#1E2125] border-gray-600 text-gray-200 hover:bg-[#33363B]',
+                        'bg-white border-slate-300 text-slate-800 hover:bg-slate-100',
+                        'bg-white border-pink-200 text-pink-800 hover:bg-pink-50',
+                        'bg-[#0B132B] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]',
+                        'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50',
+                        'bg-[#16110F] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]',
+                        'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
+                      )}`}
+                      title="Экспорт в CSV для Excel с разделителем ; и UTF-8 BOM"
+                    >
+                      <span>📊</span>
+                      <span>Экспорт CSV (Excel)</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowHistoryModal(false)}
+                    className={`min-h-[44px] px-5 py-2 text-xs font-bold rounded-xl transition-all ${t(
+                      'bg-[#FFB300] text-black hover:bg-[#FFA000]',
+                      'bg-amber-600 text-white hover:bg-amber-700',
+                      'bg-pink-500 text-white hover:bg-pink-600',
+                      'bg-blue-600 text-white hover:bg-blue-700',
+                      'bg-emerald-600 text-white hover:bg-emerald-700',
+                      'bg-[#6D4C41] text-white hover:bg-[#5D4037]',
+                      'bg-[#C62828] text-white hover:bg-[#B71C1C]'
+                    )}`}
                   >
                     ЗАКРЫТЬ
                   </button>
@@ -1916,9 +2494,9 @@
                   onClick={handleNewDay}
                   type="button"
                   className="min-h-[48px] px-3.5 py-2 rounded-xl text-[16px] sm:text-sm font-semibold flex items-center justify-center transition-all flex-shrink-0 bg-white/10 hover:bg-white/20 active:bg-white/30 text-white border border-white/20 shadow-sm"
-                  title="Начать новый день и очистить список"
+                  title="Начать новый маршрут и очистить список"
                 >
-                  <span>Новый день</span>
+                  <span>Новый маршрут</span>
                 </button>
 
                 <button
@@ -2257,6 +2835,98 @@
 
             {/* 3. Маршрутный лист (Список точек) */}
             <section className={`rounded-2xl shadow-sm border p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
+              
+              {/* Панель даты маршрута (только в режиме Эксперта) */}
+              {appRole === 'expert' && (
+                <div className={`mb-3 p-2.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 transition-all ${t(
+                  'bg-[#1E2125] border-gray-700',
+                  'bg-slate-50 border-slate-200',
+                  'bg-pink-50/60 border-pink-200',
+                  'bg-[#0B132B] border-[#253652]',
+                  'bg-emerald-50/60 border-emerald-200',
+                  'bg-[#16110F] border-[#3E2F2A]',
+                  'bg-slate-50 border-slate-200'
+                )}`}>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-xs font-bold uppercase tracking-wider mr-1 ${t(
+                      'text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500'
+                    )}`}>
+                      Дата:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRouteDate(getTodayDateStr())}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors ${
+                        routeDate === getTodayDateStr()
+                          ? t('bg-[#FFB300] border-[#FFB300] text-black', 'bg-amber-500 border-amber-500 text-white', 'bg-pink-500 border-pink-500 text-white', 'bg-sky-500 border-sky-500 text-white', 'bg-emerald-600 border-emerald-600 text-white', 'bg-[#8D6E63] border-[#8D6E63] text-white', 'bg-[#C62828] border-[#C62828] text-white')
+                          : t('bg-[#282B30] border-gray-700 text-gray-300 hover:text-white', 'bg-white border-slate-300 text-slate-700 hover:text-slate-900', 'bg-white border-pink-200 text-pink-700 hover:text-pink-900', 'bg-[#162032] border-[#253652] text-blue-200 hover:text-white', 'bg-white border-emerald-200 text-emerald-800 hover:text-emerald-950', 'bg-[#241C19] border-[#3E2F2A] text-[#D7B399] hover:text-[#F5EBE6]', 'bg-white border-slate-300 text-slate-700 hover:text-slate-900')
+                      }`}
+                    >
+                      Сегодня
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRouteDate(getTomorrowDateStr())}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors ${
+                        routeDate === getTomorrowDateStr()
+                          ? t('bg-[#FFB300] border-[#FFB300] text-black', 'bg-amber-500 border-amber-500 text-white', 'bg-pink-500 border-pink-500 text-white', 'bg-sky-500 border-sky-500 text-white', 'bg-emerald-600 border-emerald-600 text-white', 'bg-[#8D6E63] border-[#8D6E63] text-white', 'bg-[#C62828] border-[#C62828] text-white')
+                          : t('bg-[#282B30] border-gray-700 text-gray-300 hover:text-white', 'bg-white border-slate-300 text-slate-700 hover:text-slate-900', 'bg-white border-pink-200 text-pink-700 hover:text-pink-900', 'bg-[#162032] border-[#253652] text-blue-200 hover:text-white', 'bg-white border-emerald-200 text-emerald-800 hover:text-emerald-950', 'bg-[#241C19] border-[#3E2F2A] text-[#D7B399] hover:text-[#F5EBE6]', 'bg-white border-slate-300 text-slate-700 hover:text-slate-900')
+                      }`}
+                    >
+                      Завтра
+                    </button>
+                    <input
+                      type="date"
+                      value={routeDate}
+                      onChange={(e) => e.target.value && setRouteDate(e.target.value)}
+                      className={`px-2 py-1 rounded-lg border text-[16px] sm:text-xs font-semibold focus:outline-none ${t(
+                        'bg-[#282B30] border-gray-700 text-gray-100',
+                        'bg-white border-slate-300 text-slate-800',
+                        'bg-white border-pink-200 text-pink-900',
+                        'bg-[#162032] border-[#253652] text-blue-100',
+                        'bg-white border-emerald-200 text-emerald-900',
+                        'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6]',
+                        'bg-white border-slate-300 text-slate-800'
+                      )}`}
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    {routeHistory[routeDate] && (
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
+                        <span>✓</span>
+                        <span>Сохранено</span>
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleSaveRouteToHistory(false)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 shadow-sm ${t(
+                        'bg-[#FFB300]/20 border-[#FFB300]/50 text-[#FFB300] hover:bg-[#FFB300]/30',
+                        'bg-amber-100 border-amber-300 text-amber-900 hover:bg-amber-200',
+                        'bg-pink-100 border-pink-300 text-pink-800 hover:bg-pink-200',
+                        'bg-[#162238] border-sky-400/50 text-sky-300 hover:bg-[#1E3A5F]',
+                        'bg-emerald-100 border-emerald-300 text-emerald-900 hover:bg-emerald-200',
+                        'bg-[#382B26] border-[#D7B399]/50 text-[#D7B399] hover:bg-[#4E342E]',
+                        'bg-amber-100 border-amber-300 text-amber-900 hover:bg-amber-200'
+                      )}`}
+                      title="Сохранить текущий маршрут в историю"
+                    >
+                      <span>💾</span>
+                      <span>Сохранить</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Всплывающее уведомление о сохранении */}
+              {saveToast && (
+                <div className="mb-3 p-2 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-xs font-bold flex items-center gap-2 animate-fade-in">
+                  <span>✓</span>
+                  <span>{saveToast}</span>
+                </div>
+              )}
+
               <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className={`text-sm font-bold uppercase tracking-wider ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>

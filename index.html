@@ -21,6 +21,10 @@
   <!-- Tesseract.js v5.1.0 -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
 
+  <!-- Leaflet 1.9.4 -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
   <style>
     /* Плавные анимации и предотвращение дергания скролла */
     body {
@@ -99,6 +103,70 @@
         };
         img.src = tempUrl;
       });
+    }
+
+    // Палитра цветов для вкладок диспетчера
+    const DISPATCHER_PALETTE = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#db2777', '#ca8a04', '#4f46e5', '#059669', '#e11d48'];
+    const DEFAULT_DISPATCHER_EXPERTS = [
+      { id: 'exp_1', name: 'Эксперт 1', color: '#2563eb', points: [] },
+      { id: 'exp_2', name: 'Эксперт 2', color: '#dc2626', points: [] },
+      { id: 'exp_3', name: 'Эксперт 3', color: '#16a34a', points: [] },
+      { id: 'exp_4', name: 'Эксперт 4', color: '#9333ea', points: [] }
+    ];
+
+    // Кэш геокодирования адресов (Nominatim / OSM)
+    function getGeoCache() {
+      try {
+        const saved = localStorage.getItem('expert_route_geo_cache');
+        return saved ? JSON.parse(saved) : {};
+      } catch (e) {
+        return {};
+      }
+    }
+    function saveGeoCache(cache) {
+      try {
+        localStorage.setItem('expert_route_geo_cache', JSON.stringify(cache));
+      } catch (e) {}
+    }
+
+    // Геокодирование одного адреса через Nominatim с очисткой и fallback на "Москва"
+    async function geocodeAddress(rawAddr, cache) {
+      if (!rawAddr || !rawAddr.trim()) return null;
+      const clean = rawAddr.trim();
+      if (cache[clean]) return cache[clean];
+
+      // Очистка от квартир, этажей и помещений для точности поиска OSM
+      const query = clean
+        .replace(/(?:кв|квартира|помещ|пом|подъезд|эт|этаж)\.?\s*\d.*$/gi, '')
+        .replace(/^[,\s]+|[,\s]+$/g, '')
+        .trim();
+
+      const searchOSM = async (q) => {
+        try {
+          const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(q)}`;
+          const res = await fetch(url, { headers: { 'Accept-Language': 'ru' } });
+          if (!res.ok) return null;
+          const list = await res.json();
+          if (Array.isArray(list) && list.length > 0) {
+            return { lat: parseFloat(list[0].lat), lon: parseFloat(list[0].lon) };
+          }
+        } catch (e) {
+          console.warn('Ошибка запроса геокодирования:', q, e);
+        }
+        return null;
+      };
+
+      let coords = await searchOSM(query);
+      if (!coords && !/(москва|обл|санкт|петербург)/i.test(query)) {
+        coords = await searchOSM('Москва, ' + query);
+      }
+
+      if (coords) {
+        cache[clean] = coords;
+        saveGeoCache(cache);
+        return coords;
+      }
+      return null;
     }
 
     function parseAddresses(rawText) {
@@ -347,8 +415,20 @@
         }, 2000);
       };
 
-      // Состояния точек и настроек (с автозагрузкой из localStorage)
-      const [points, setPoints] = useState(() => {
+      // Роль приложения: 'expert' (Одиночный режим) или 'dispatcher' (Режим диспетчера)
+      const [appRole, setAppRole] = useState(() => {
+        return localStorage.getItem('expert_route_role') || 'expert';
+      });
+      const appRoleRef = useRef(appRole);
+      useEffect(() => {
+        appRoleRef.current = appRole;
+        try {
+          localStorage.setItem('expert_route_role', appRole);
+        } catch (e) {}
+      }, [appRole]);
+
+      // Точки одиночного режима ("Эксперт")
+      const [expertPoints, setExpertPoints] = useState(() => {
         try {
           const saved = localStorage.getItem('expert_route_points');
           return saved ? JSON.parse(saved) : [];
@@ -356,6 +436,142 @@
           return [];
         }
       });
+
+      // Список экспертов режима "Диспетчер"
+      const [dispatcherExperts, setDispatcherExperts] = useState(() => {
+        try {
+          const saved = localStorage.getItem('expert_route_dispatcher_experts');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          }
+        } catch (e) {}
+        return DEFAULT_DISPATCHER_EXPERTS;
+      });
+
+      // Активная вкладка эксперта в режиме диспетчера
+      const [activeExpertId, setActiveExpertId] = useState(() => {
+        return localStorage.getItem('expert_route_active_exp') || 'exp_1';
+      });
+      const activeExpertIdRef = useRef(activeExpertId);
+      useEffect(() => {
+        activeExpertIdRef.current = activeExpertId;
+        try {
+          localStorage.setItem('expert_route_active_exp', activeExpertId);
+        } catch (e) {}
+      }, [activeExpertId]);
+
+      // Активный эксперт (объект)
+      const activeExpert = dispatcherExperts.find(e => e.id === activeExpertId) || dispatcherExperts[0] || DEFAULT_DISPATCHER_EXPERTS[0];
+
+      // Точки для отображения и редактирования (переключаются прозрачно в зависимости от роли)
+      const points = appRole === 'dispatcher' ? (activeExpert?.points || []) : expertPoints;
+
+      // Универсальный сеттер точек (прозрачно обновляет либо активного эксперта, либо одиночный режим)
+      const setPoints = useCallback((updater) => {
+        if (appRoleRef.current === 'dispatcher') {
+          setDispatcherExperts(prev => {
+            const curId = activeExpertIdRef.current;
+            return prev.map(exp => {
+              if (exp.id === curId) {
+                const nextPts = typeof updater === 'function' ? updater(exp.points || []) : updater;
+                return { ...exp, points: nextPts };
+              }
+              return exp;
+            });
+          });
+        } else {
+          setExpertPoints(updater);
+        }
+      }, []);
+
+      // Состояния интерактивной карты диспетчера
+      const [showMapModal, setShowMapModal] = useState(false);
+      const [visibleExpertIds, setVisibleExpertIds] = useState(() => {
+        return DEFAULT_DISPATCHER_EXPERTS.map(e => e.id);
+      });
+      const [geocodingStatus, setGeocodingStatus] = useState('');
+      const [unresolvedPoints, setUnresolvedPoints] = useState([]);
+      const mapInstanceRef = useRef(null);
+      const mapLayersGroupRef = useRef(null);
+
+      // Управление экспертами диспетчера
+      const handleAddExpert = () => {
+        setDispatcherExperts(prev => {
+          const nextIndex = prev.length + 1;
+          const color = DISPATCHER_PALETTE[(nextIndex - 1) % DISPATCHER_PALETTE.length];
+          const newExp = {
+            id: 'exp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+            name: `Эксперт ${nextIndex}`,
+            color,
+            points: []
+          };
+          setActiveExpertId(newExp.id);
+          setVisibleExpertIds(v => [...v, newExp.id]);
+          return [...prev, newExp];
+        });
+      };
+
+      const handleRemoveExpert = (expId) => {
+        if (dispatcherExperts.length <= 1) {
+          alert('Должен оставаться хотя бы один эксперт.');
+          return;
+        }
+        const target = dispatcherExperts.find(e => e.id === expId);
+        const name = target?.name || 'эксперта';
+        if (confirm(`Удалить вкладку «${name}» и все назначенные точки?`)) {
+          setDispatcherExperts(prev => {
+            const nextList = prev.filter(e => e.id !== expId);
+            if (activeExpertId === expId) {
+              setActiveExpertId(nextList[0]?.id || 'exp_1');
+            }
+            return nextList;
+          });
+          setVisibleExpertIds(v => v.filter(id => id !== expId));
+        }
+      };
+
+      const handleRenameExpert = (expId, newName) => {
+        setDispatcherExperts(prev => prev.map(exp => {
+          if (exp.id === expId) {
+            return { ...exp, name: newName };
+          }
+          return exp;
+        }));
+      };
+
+      const handleTransferPoint = (fromPointIndex, targetExpertId) => {
+        if (!targetExpertId || targetExpertId === activeExpertId) return;
+        const pointToMove = points[fromPointIndex];
+        if (!pointToMove) return;
+
+        setDispatcherExperts(prev => {
+          return prev.map(exp => {
+            if (exp.id === activeExpertId) {
+              return { ...exp, points: (exp.points || []).filter((_, idx) => idx !== fromPointIndex) };
+            }
+            if (exp.id === targetExpertId) {
+              const updated = sortPointsByTime([...(exp.points || []), pointToMove]);
+              return { ...exp, points: updated };
+            }
+            return exp;
+          });
+        });
+      };
+
+      const toggleExpertVisibility = (expId) => {
+        setVisibleExpertIds(prev =>
+          prev.includes(expId) ? prev.filter(id => id !== expId) : [...prev, expId]
+        );
+      };
+
+      const toggleAllExpertsVisibility = () => {
+        if (visibleExpertIds.length === dispatcherExperts.length) {
+          setVisibleExpertIds([]);
+        } else {
+          setVisibleExpertIds(dispatcherExperts.map(e => e.id));
+        }
+      };
 
       const [startType, setStartType] = useState(() => {
         return localStorage.getItem('expert_route_start_type') || 'current'; // 'current' | 'custom'
@@ -541,9 +757,189 @@
       // Автосохранение в localStorage
       useEffect(() => {
         try {
-          localStorage.setItem('expert_route_points', JSON.stringify(points));
+          localStorage.setItem('expert_route_points', JSON.stringify(expertPoints));
         } catch (e) {}
-      }, [points]);
+      }, [expertPoints]);
+
+      useEffect(() => {
+        try {
+          localStorage.setItem('expert_route_dispatcher_experts', JSON.stringify(dispatcherExperts));
+        } catch (e) {}
+      }, [dispatcherExperts]);
+
+      // Инициализация и рендеринг карты Leaflet при открытии модального окна
+      useEffect(() => {
+        if (!showMapModal) {
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.remove();
+            mapInstanceRef.current = null;
+          }
+          return;
+        }
+
+        let isMounted = true;
+
+        const initMap = async () => {
+          await new Promise(r => setTimeout(r, 60));
+          if (!isMounted) return;
+
+          const container = document.getElementById('dispatcher-map-container');
+          if (!container || typeof L === 'undefined') return;
+
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.remove();
+            mapInstanceRef.current = null;
+          }
+
+          const map = L.map(container, { preferCanvas: true }).setView([55.751244, 37.618423], 10);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 19
+          }).addTo(map);
+
+          mapInstanceRef.current = map;
+          const layersGroup = L.featureGroup().addTo(map);
+          mapLayersGroupRef.current = layersGroup;
+
+          // Страховка от серых тайлов при открытии модального окна
+          setTimeout(() => {
+            if (isMounted && mapInstanceRef.current) {
+              mapInstanceRef.current.invalidateSize();
+            }
+          }, 150);
+
+          const geoCache = getGeoCache();
+          const unresolved = [];
+          const expertsToRender = dispatcherExperts.filter(e => visibleExpertIds.includes(e.id));
+
+          const uncachedAddrs = new Set();
+          for (const exp of expertsToRender) {
+            for (const pt of (exp.points || [])) {
+              if (pt.address && pt.address.trim() && !geoCache[pt.address.trim()]) {
+                uncachedAddrs.add(pt.address.trim());
+              }
+            }
+          }
+
+          let progressCount = 0;
+          const totalToFetch = uncachedAddrs.size;
+
+          for (const exp of expertsToRender) {
+            if (!isMounted) return;
+            const validPointsWithCoords = [];
+
+            for (let pIdx = 0; pIdx < (exp.points || []).length; pIdx++) {
+              if (!isMounted) return;
+              const pt = exp.points[pIdx];
+              if (!pt.address || !pt.address.trim()) {
+                unresolved.push({ expertName: exp.name, color: exp.color, point: pt, reason: 'Нет адреса (монтаж)' });
+                continue;
+              }
+
+              const cleanAddr = pt.address.trim();
+              let coords = geoCache[cleanAddr];
+
+              if (!coords) {
+                progressCount++;
+                setGeocodingStatus(`Поиск координат (${progressCount} из ${totalToFetch}): ${cleanAddr.substring(0, 30)}...`);
+                coords = await geocodeAddress(cleanAddr, geoCache);
+                await new Promise(r => setTimeout(r, 1100));
+              }
+
+              if (coords) {
+                validPointsWithCoords.push({ pt, coords, pIdx });
+              } else {
+                unresolved.push({ expertName: exp.name, color: exp.color, point: pt, reason: 'Адрес не найден' });
+              }
+            }
+
+            if (!isMounted) return;
+
+            validPointsWithCoords.forEach(({ pt, coords, pIdx }) => {
+              const markerHtml = `
+                <div style="background-color: ${exp.color}; width: 28px; height: 28px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.45); border: 2px solid white;">
+                  <span style="transform: rotate(45deg); color: white; font-size: 11px; font-weight: 800; font-family: sans-serif;">${pIdx + 1}</span>
+                </div>
+              `;
+              const icon = L.divIcon({
+                className: '',
+                html: markerHtml,
+                iconSize: [28, 28],
+                iconAnchor: [14, 28],
+                popupAnchor: [0, -28]
+              });
+
+              const popupContent = `
+                <div style="min-width: 170px; font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4;">
+                  <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-weight: bold; color: ${exp.color};">
+                    <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ${exp.color};"></span>
+                    <span>${exp.name} &bull; Точка #${pIdx + 1}</span>
+                  </div>
+                  ${pt.type ? `<div style="font-size: 11px; font-weight: bold; margin-bottom: 4px; color: #4b5563;">Тип заявки: ${pt.type === 'М' ? 'Монтаж' : pt.type === 'Д' ? 'Демонтаж' : 'Сервис'}</div>` : ''}
+                  ${pt.time ? `<div style="font-weight: bold; margin-bottom: 4px;">Время: ${pt.time} ${pt.timeMode === 'strict' ? '⚠️ (строго)' : pt.timeMode === 'flexible' ? '🕒 (в течение дня)' : ''}</div>` : ''}
+                  <div style="color: #1f2937; word-break: break-word;">${pt.address}</div>
+                </div>
+              `;
+
+              const marker = L.marker([coords.lat, coords.lon], { icon }).bindPopup(popupContent);
+              marker.addTo(layersGroup);
+            });
+
+            // Маршрут по дорогам через OSRM
+            if (validPointsWithCoords.length >= 2) {
+              try {
+                const coordsStr = validPointsWithCoords.map(item => `${item.coords.lon},${item.coords.lat}`).join(';');
+                const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`;
+                const res = await fetch(osrmUrl);
+                if (res.ok) {
+                  const osrmData = await res.json();
+                  if (isMounted && osrmData?.routes?.[0]?.geometry) {
+                    L.geoJSON(osrmData.routes[0].geometry, {
+                      style: { color: exp.color, weight: 4, opacity: 0.85, lineJoin: 'round' }
+                    }).addTo(layersGroup);
+                  }
+                } else {
+                  throw new Error('OSRM error');
+                }
+              } catch (routeErr) {
+                if (isMounted) {
+                  const latLngs = validPointsWithCoords.map(item => [item.coords.lat, item.coords.lon]);
+                  L.polyline(latLngs, {
+                    color: exp.color,
+                    weight: 3,
+                    opacity: 0.7,
+                    dashArray: '6, 8'
+                  }).addTo(layersGroup);
+                }
+              }
+            }
+          }
+
+          if (!isMounted) return;
+
+          setUnresolvedPoints(unresolved);
+          setGeocodingStatus('');
+
+          if (layersGroup.getLayers().length > 0) {
+            map.fitBounds(layersGroup.getBounds().pad(0.15));
+          }
+          setTimeout(() => {
+            if (isMounted && mapInstanceRef.current) {
+              mapInstanceRef.current.invalidateSize();
+            }
+          }, 150);
+        };
+
+        initMap();
+
+        return () => {
+          isMounted = false;
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.remove();
+            mapInstanceRef.current = null;
+          }
+        };
+      }, [showMapModal, visibleExpertIds]);
 
       useEffect(() => {
         try {
@@ -650,7 +1046,7 @@
                 formData.append('image', compressedBlob, file.name ? file.name.replace(/\.[^.]+$/, '.jpg') : 'screenshot.jpg');
 
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 14000);
+                const timeoutId = setTimeout(() => controller.abort(), 28000);
 
                 const response = await fetch(OCR_API_URL, {
                   method: 'POST',
@@ -943,19 +1339,50 @@
         }
       };
 
-      // Кнопка "Новый день" (сброс всего)
+      // Кнопка "Новый день" (сброс)
       const handleNewDay = () => {
-        if (confirm('Начать новый день? Все загруженные скриншоты и список точек маршрута будут очищены.')) {
-          images.forEach(img => {
-            if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
-          });
-          setImages([]);
-          setPoints([]);
-          setRawOcrText('');
-          setOcrError('');
-          setShowRawText(false);
-          setOcrEngineUsed(null);
-          localStorage.removeItem('expert_route_points');
+        if (appRole === 'dispatcher') {
+          const action = confirm(
+            `Очистить только текущую вкладку «${activeExpert.name}»?\n\nНажмите «ОК», чтобы очистить заявки «${activeExpert.name}».\nНажмите «Отмена», чтобы выбрать сброс всех экспертов или отказаться.`
+          );
+          if (action) {
+            images.forEach(img => {
+              if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
+            });
+            setImages([]);
+            setPoints([]);
+            setRawOcrText('');
+            setOcrError('');
+            setShowRawText(false);
+            setOcrEngineUsed(null);
+          } else {
+            if (confirm('Сбросить ВСЕХ экспертов и начать абсолютно новый день?')) {
+              images.forEach(img => {
+                if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
+              });
+              setImages([]);
+              setDispatcherExperts(DEFAULT_DISPATCHER_EXPERTS);
+              setActiveExpertId('exp_1');
+              setRawOcrText('');
+              setOcrError('');
+              setShowRawText(false);
+              setOcrEngineUsed(null);
+              localStorage.removeItem('expert_route_dispatcher_experts');
+            }
+          }
+        } else {
+          if (confirm('Начать новый день? Все загруженные скриншоты и список точек маршрута будут очищены.')) {
+            images.forEach(img => {
+              if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
+            });
+            setImages([]);
+            setPoints([]);
+            setRawOcrText('');
+            setOcrError('');
+            setShowRawText(false);
+            setOcrEngineUsed(null);
+            localStorage.removeItem('expert_route_points');
+          }
         }
       };
 
@@ -1216,6 +1643,127 @@
             </div>
           )}
 
+          {/* Модальное окно: Интерактивная карта пересечений диспетчера (Leaflet + OSM + OSRM) */}
+          {showMapModal && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+              onClick={() => setShowMapModal(false)}
+            >
+              <div
+                className={`w-full max-w-5xl h-[92vh] max-h-[900px] flex flex-col rounded-2xl border-2 shadow-2xl overflow-hidden ${t(
+                  'bg-[#1E2125] border-gray-700 text-gray-100',
+                  'bg-white border-slate-300 text-slate-900',
+                  'bg-white border-pink-300 text-pink-950',
+                  'bg-[#10192A] border-[#253652] text-blue-50',
+                  'bg-white border-emerald-300 text-emerald-950',
+                  'bg-[#1F1714] border-[#3E2F2A] text-[#F5EBE6]',
+                  'bg-white border-slate-300 text-slate-900'
+                )}`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Шапка модального окна карты */}
+                <div className={`p-3 sm:p-4 border-b flex flex-wrap items-center justify-between gap-2.5 ${t('border-gray-700 bg-[#282B30]', 'border-slate-200 bg-slate-50', 'border-pink-200 bg-pink-50', 'border-[#253652] bg-[#162032]', 'border-emerald-200 bg-emerald-50', 'border-[#3E2F2A] bg-[#241C19]', 'border-slate-200 bg-slate-50')}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">🗺️</span>
+                    <div>
+                      <h3 className="text-sm sm:text-base font-black tracking-wide">
+                        Карта маршрутов и пересечений
+                      </h3>
+                      <div className="text-[11px] opacity-75">
+                        Маршрутизация по дорогам OSRM • OpenStreetMap
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={toggleAllExpertsVisibility}
+                      className="min-h-[44px] px-3 py-1.5 rounded-xl border text-xs font-semibold hover:opacity-80 transition-all opacity-90"
+                    >
+                      {visibleExpertIds.length === dispatcherExperts.length ? 'Скрыть всех' : 'Показать всех'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowMapModal(false)}
+                      className="min-h-[44px] min-w-[44px] p-2 rounded-xl hover:bg-black/10 text-lg font-bold flex items-center justify-center transition-all"
+                      title="Закрыть карту"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+
+                {/* Панель фильтрации экспертов по цветам */}
+                <div className={`px-3 py-2 border-b flex items-center gap-2 overflow-x-auto scrollbar-thin ${t('border-gray-700 bg-[#1A1D21]', 'border-slate-200 bg-slate-100', 'border-pink-200 bg-pink-100/50', 'border-[#253652] bg-[#0E1524]', 'border-emerald-200 bg-emerald-100/50', 'border-[#3E2F2A] bg-[#181210]', 'border-slate-200 bg-slate-100')}`}>
+                  <span className="text-xs font-bold opacity-75 whitespace-nowrap">Слои:</span>
+                  {dispatcherExperts.map(exp => {
+                    const isVisible = visibleExpertIds.includes(exp.id);
+                    const count = exp.points ? exp.points.length : 0;
+                    return (
+                      <button
+                        key={exp.id}
+                        type="button"
+                        onClick={() => toggleExpertVisibility(exp.id)}
+                        className={`min-h-[38px] px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all flex-shrink-0 ${
+                          isVisible
+                            ? 'opacity-100 shadow-sm'
+                            : 'opacity-40 grayscale line-through'
+                        }`}
+                        style={{
+                          backgroundColor: isVisible ? exp.color + '20' : 'transparent',
+                          borderColor: exp.color,
+                          color: isVisible ? exp.color : 'inherit'
+                        }}
+                      >
+                        <span
+                          className="w-3 h-3 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: exp.color }}
+                        />
+                        <span>{exp.name}</span>
+                        <span className="opacity-80">({count})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Индикатор геокодирования в реальном времени */}
+                {geocodingStatus && (
+                  <div className="px-4 py-2 bg-blue-600 text-white text-xs font-semibold flex items-center gap-2 animate-pulse">
+                    <span className="animate-spin text-sm">⏳</span>
+                    <span>{geocodingStatus}</span>
+                  </div>
+                )}
+
+                {/* Контейнер интерактивной карты Leaflet */}
+                <div id="dispatcher-map-container" className="flex-1 w-full min-h-[350px] relative z-0"></div>
+
+                {/* Панель заявок без геопозиции (нераспознанные адреса или монтажи без адреса) */}
+                {unresolvedPoints.length > 0 && (
+                  <div className={`p-2.5 sm:p-3 border-t text-xs max-h-[140px] overflow-y-auto ${t('border-gray-700 bg-[#1A1D21]', 'border-slate-200 bg-amber-50 text-amber-950', 'border-pink-200 bg-pink-50 text-pink-950', 'border-[#253652] bg-[#0E1524] text-blue-100', 'border-emerald-200 bg-emerald-50 text-emerald-950', 'border-[#3E2F2A] bg-[#181210] text-[#D7B399]', 'border-slate-200 bg-amber-50 text-amber-950')}`}>
+                    <div className="font-bold mb-1.5 flex items-center gap-1.5 text-amber-500">
+                      <span>⚠️</span>
+                      <span>Не отображаются на карте ({unresolvedPoints.length}):</span>
+                    </div>
+                    <div className="space-y-1">
+                      {unresolvedPoints.map((item, idx) => (
+                        <div key={idx} className="flex items-center gap-2 opacity-90">
+                          <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
+                          <span className="font-semibold">{item.expertName}:</span>
+                          {item.point.type && <span className="font-bold">[{item.point.type}]</span>}
+                          {item.point.time && <span>({item.point.time})</span>}
+                          <span className="italic">{item.point.address || 'Адрес не указан'}</span>
+                          <span className="text-[11px] opacity-75">— {item.reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            </div>
+          )}
+
           <div className="max-w-[680px] mx-auto min-h-screen flex flex-col p-3 sm:p-4 pb-36 sm:pb-40">
             
             {/* 1. Шапка (Header) с фирменным градиентом в цвет темы */}
@@ -1267,6 +1815,141 @@
                 </button>
               </div>
             </header>
+
+            {/* Переключатель роли: Эксперт / Диспетчер */}
+            <div className={`p-1.5 rounded-2xl border mb-4 grid grid-cols-2 gap-1.5 shadow-sm ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
+              <button
+                type="button"
+                onClick={() => setAppRole('expert')}
+                className={`min-h-[44px] px-3 py-2 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                  appRole === 'expert'
+                    ? t('bg-[#FFB300] text-black shadow-sm', 'bg-amber-500 text-white shadow-sm', 'bg-pink-500 text-white shadow-sm', 'bg-sky-500 text-white shadow-sm', 'bg-emerald-600 text-white shadow-sm', 'bg-[#6D4C41] text-white shadow-sm', 'bg-[#C62828] text-white shadow-sm')
+                    : 'text-current opacity-70 hover:opacity-100'
+                }`}
+              >
+                <span>👤</span>
+                <span>Эксперт</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAppRole('dispatcher')}
+                className={`min-h-[44px] px-3 py-2 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                  appRole === 'dispatcher'
+                    ? t('bg-[#FFB300] text-black shadow-sm', 'bg-amber-500 text-white shadow-sm', 'bg-pink-500 text-white shadow-sm', 'bg-sky-500 text-white shadow-sm', 'bg-emerald-600 text-white shadow-sm', 'bg-[#6D4C41] text-white shadow-sm', 'bg-[#C62828] text-white shadow-sm')
+                    : 'text-current opacity-70 hover:opacity-100'
+                }`}
+              >
+                <span>🎛️</span>
+                <span>Диспетчер</span>
+              </button>
+            </div>
+
+            {/* Панель управления диспетчера: Вкладки экспертов + Карта пересечений */}
+            {appRole === 'dispatcher' && (
+              <section className={`rounded-2xl shadow-sm border p-3 sm:p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
+                
+                {/* Верхняя строка панели: кнопка Карты и общее число точек */}
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base sm:text-lg">🎛️</span>
+                    <span className="font-black text-sm uppercase tracking-wide">
+                      Эксперты на линии ({dispatcherExperts.length})
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowMapModal(true)}
+                    className="min-h-[44px] px-3.5 py-2 rounded-xl font-bold text-xs sm:text-sm bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2 shadow-md active:scale-[0.98] transition-all"
+                    title="Открыть общую интерактивную карту пересечений маршрутов"
+                  >
+                    <span>🗺️</span>
+                    <span>Карта пересечений</span>
+                    <span className="bg-white/20 text-white px-2 py-0.5 rounded-full text-[11px] font-extrabold">
+                      {dispatcherExperts.reduce((sum, e) => sum + (e.points?.length || 0), 0)}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Горизонтальный список вкладок экспертов */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                  {dispatcherExperts.map((exp) => {
+                    const isActive = exp.id === activeExpertId;
+                    const count = exp.points ? exp.points.length : 0;
+                    return (
+                      <div
+                        key={exp.id}
+                        onClick={() => setActiveExpertId(exp.id)}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer flex-shrink-0 transition-all min-h-[44px] select-none ${
+                          isActive
+                            ? 'ring-2 ring-offset-1 ring-blue-500 shadow-md font-bold'
+                            : 'opacity-70 hover:opacity-100 hover:shadow-sm'
+                        } ${t('bg-[#1E2125] border-gray-700', 'bg-slate-50 border-slate-300', 'bg-pink-50 border-pink-200', 'bg-[#0B132B] border-[#253652]', 'bg-emerald-50 border-emerald-200', 'bg-[#16110F] border-[#3E2F2A]', 'bg-slate-50 border-slate-300')}`}
+                        style={{
+                          borderColor: isActive ? exp.color : undefined
+                        }}
+                      >
+                        {/* Цветной кружок эксперта */}
+                        <span
+                          className="w-3.5 h-3.5 rounded-full flex-shrink-0 shadow-sm"
+                          style={{ backgroundColor: exp.color }}
+                        />
+                        <span className="text-xs sm:text-sm whitespace-nowrap">{exp.name}</span>
+                        <span
+                          className="text-[11px] px-1.5 py-0.5 rounded-full font-mono font-bold"
+                          style={{ backgroundColor: exp.color + '25', color: exp.color }}
+                        >
+                          {count}
+                        </span>
+
+                        {/* Кнопка закрытия вкладки (если экспертов > 1) */}
+                        {dispatcherExperts.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveExpert(exp.id);
+                            }}
+                            className="w-6 h-6 rounded-full flex items-center justify-center opacity-50 hover:opacity-100 hover:bg-black/10 text-xs ml-0.5"
+                            title={`Удалить вкладку ${exp.name}`}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Кнопка добавления эксперта */}
+                  <button
+                    type="button"
+                    onClick={handleAddExpert}
+                    className={`min-h-[44px] px-3 py-2 rounded-xl border border-dashed flex items-center gap-1.5 text-xs sm:text-sm font-semibold flex-shrink-0 transition-all opacity-80 hover:opacity-100 ${t('border-gray-600 hover:bg-[#33363B]', 'border-slate-400 hover:bg-slate-100', 'border-pink-300 hover:bg-pink-100', 'border-blue-400/40 hover:bg-[#162238]', 'border-emerald-300 hover:bg-emerald-100', 'border-[#8D6E63] hover:bg-[#221A17]', 'border-slate-400 hover:bg-slate-100')}`}
+                    title="Добавить ещё одного эксперта"
+                  >
+                    <span>+</span>
+                    <span>Добавить</span>
+                  </button>
+                </div>
+
+                {/* Редактирование имени текущего активного эксперта */}
+                <div className={`mt-3 pt-3 border-t flex items-center gap-2 ${t('border-gray-700', 'border-slate-200', 'border-pink-200', 'border-[#253652]', 'border-emerald-200', 'border-[#3E2F2A]', 'border-slate-200')}`}>
+                  <label className="text-xs font-semibold opacity-75 whitespace-nowrap flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: activeExpert.color }}></span>
+                    <span>Имя активной вкладки:</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={activeExpert.name}
+                    onChange={(e) => handleRenameExpert(activeExpert.id, e.target.value)}
+                    placeholder="Например: Иванов / Юг"
+                    className={`flex-1 min-h-[38px] px-3 py-1.5 rounded-lg border text-[16px] sm:text-sm font-semibold focus:outline-none ${t('bg-[#1E2125] border-gray-700 text-gray-100 focus:border-blue-500', 'bg-slate-50 border-slate-300 text-slate-800 focus:border-blue-600', 'bg-pink-50 border-pink-200 text-pink-900 focus:border-pink-500', 'bg-[#0B132B] border-[#253652] text-blue-100 focus:border-blue-400', 'bg-emerald-50 border-emerald-200 text-emerald-900 focus:border-emerald-600', 'bg-[#16110F] border-[#3E2F2A] text-[#F5EBE6] focus:border-[#D7B399]', 'bg-slate-50 border-slate-300 text-slate-800 focus:border-blue-600')}`}
+                  />
+                </div>
+
+              </section>
+            )}
 
             {/* 2. Блок загрузки изображений и OCR */}
             <section className={`rounded-2xl shadow-sm border p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
@@ -1754,6 +2437,40 @@
                         }`}
                       />
                     </div>
+
+                    {/* Передача точки другому эксперту (только в режиме диспетчера) */}
+                    {appRole === 'dispatcher' && dispatcherExperts.length > 1 && (
+                      <div className={`pt-2 border-t border-dashed flex items-center justify-between gap-2 ${t('border-gray-700', 'border-slate-200', 'border-pink-200', 'border-[#253652]', 'border-emerald-200', 'border-[#3E2F2A]', 'border-slate-200')}`}>
+                        <div className="flex items-center gap-1.5 text-xs opacity-75 font-semibold">
+                          <span>⇄</span>
+                          <span>Передать:</span>
+                        </div>
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleTransferPoint(idx, e.target.value);
+                            }
+                          }}
+                          className={`min-h-[38px] px-2.5 py-1 rounded-lg border text-xs font-semibold focus:outline-none transition-colors ${t(
+                            'bg-[#282B30] border-gray-600 text-gray-200 focus:border-blue-400',
+                            'bg-slate-100 border-slate-300 text-slate-800 focus:border-blue-600',
+                            'bg-pink-100 border-pink-300 text-pink-900 focus:border-pink-500',
+                            'bg-[#162032] border-[#253652] text-blue-200 focus:border-sky-400',
+                            'bg-emerald-100 border-emerald-300 text-emerald-900 focus:border-emerald-600',
+                            'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] focus:border-[#D7B399]',
+                            'bg-slate-100 border-slate-300 text-slate-800 focus:border-blue-600'
+                          )}`}
+                        >
+                          <option value="" disabled>Выберите эксперта...</option>
+                          {dispatcherExperts.filter(e => e.id !== activeExpertId).map(e => (
+                            <option key={e.id} value={e.id}>
+                              {e.name} ({e.points ? e.points.length : 0} т.)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1887,18 +2604,46 @@
             {/* 4. Плавающая главная кнопка "Открыть маршрут в Яндекс Картах" */}
             <footer className={`fixed bottom-0 left-0 right-0 backdrop-blur-md border-t px-3 sm:px-4 py-2.5 z-40 transition-colors ${t('bg-[#101112]/95 border-gray-800', 'bg-white/95 border-slate-200', 'bg-white/95 border-pink-200', 'bg-[#0B132B]/95 border-[#253652]', 'bg-white/95 border-emerald-200', 'bg-[#16110F]/95 border-[#3E2F2A]', 'bg-white/95 border-slate-200')}`}>
               <div className="max-w-[680px] mx-auto">
-                <button
-                  type="button"
-                  onClick={handleOpenYandexMaps}
-                  disabled={points.length === 0}
-                  className="w-full min-h-[48px] py-3.5 px-4 rounded-xl font-bold text-base sm:text-lg flex items-center justify-center gap-2.5 shadow-md active:scale-[0.99] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{ backgroundColor: '#FFCC00', color: '#000000' }}
-                >
-                  <span>Открыть маршрут в Яндекс Картах</span>
-                  <span className="bg-black/10 text-black text-xs px-2 py-0.5 rounded-full font-extrabold ml-1">
-                    {points.length} {points.length === 1 ? 'точка' : points.length >= 2 && points.length <= 4 ? 'точки' : 'точек'}
-                  </span>
-                </button>
+                {appRole === 'dispatcher' ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowMapModal(true)}
+                      className="flex-1 min-h-[48px] py-3 px-2 sm:px-3 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-md bg-blue-600 hover:bg-blue-700 text-white active:scale-[0.99] transition-all"
+                    >
+                      <span>🗺️</span>
+                      <span>Общая карта</span>
+                      <span className="bg-white/20 text-white text-[11px] px-1.5 py-0.5 rounded-full font-extrabold">
+                        {dispatcherExperts.reduce((sum, e) => sum + (e.points?.length || 0), 0)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOpenYandexMaps}
+                      disabled={points.length === 0}
+                      className="flex-1 min-h-[48px] py-3 px-2 sm:px-3 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-md active:scale-[0.99] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                      style={{ backgroundColor: '#FFCC00', color: '#000000' }}
+                    >
+                      <span>Яндекс ({activeExpert?.name || 'Эксперт'})</span>
+                      <span className="bg-black/10 text-black text-[11px] px-1.5 py-0.5 rounded-full font-extrabold">
+                        {points.length}
+                      </span>
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleOpenYandexMaps}
+                    disabled={points.length === 0}
+                    className="w-full min-h-[48px] py-3.5 px-4 rounded-xl font-bold text-base sm:text-lg flex items-center justify-center gap-2.5 shadow-md active:scale-[0.99] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: '#FFCC00', color: '#000000' }}
+                  >
+                    <span>Открыть маршрут в Яндекс Картах</span>
+                    <span className="bg-black/10 text-black text-xs px-2 py-0.5 rounded-full font-extrabold ml-1">
+                      {points.length} {points.length === 1 ? 'точка' : points.length >= 2 && points.length <= 4 ? 'точки' : 'точек'}
+                    </span>
+                  </button>
+                )}
               </div>
             </footer>
 

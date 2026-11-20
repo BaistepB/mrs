@@ -120,7 +120,7 @@
     // Кэш геокодирования адресов Яндекс Геокодера (только валидные координаты { lat, lon })
     function getGeoCache() {
       try {
-        const saved = localStorage.getItem('expert_route_geo_cache_yandex_v1');
+        const saved = localStorage.getItem('expert_route_geo_cache_yandex_v2');
         if (!saved) return {};
         const parsed = JSON.parse(saved);
         if (typeof parsed !== 'object' || parsed === null) return {};
@@ -143,85 +143,37 @@
             toSave[k] = { lat: v.lat, lon: v.lon };
           }
         }
-        localStorage.setItem('expert_route_geo_cache_yandex_v1', JSON.stringify(toSave));
+        localStorage.setItem('expert_route_geo_cache_yandex_v2', JSON.stringify(toSave));
       } catch (e) {}
     }
 
-    // Нормализация адреса перед геокодированием: удаление хвостов (этажи, квартиры, офисы)
-    function normalizeAddressForGeocoder(rawAddress) {
-      if (!rawAddress) return '';
-      let s = rawAddress.trim();
-
-      // 1. Удаление хвостов (этажи, квартиры, помещения, комнаты, офисы, подъезды)
-      s = s.replace(/,?\s*\d*\s*этаж.*$/gi, '');
-      s = s.replace(/,?\s*(?:кв|квартира|пом|помещ|комн?|офис)\.?\s*[\dа-яёА-ЯЁ\/-]*.*$/gi, '');
-      s = s.replace(/,?\s*подъезд\s*\d.*$/gi, '');
-
-      // 2. Раскрытие частых сокращений
-      s = s.replace(/\bМО\s*,/gi, 'Московская область,');
-      s = s.replace(/\bпр-кт\.?\b/gi, 'проспект');
-      s = s.replace(/\bб-р\.?\b/gi, 'бульвар');
-      s = s.replace(/(?:^|\s)ш\.?(?=\s|[0-9]|$)/gi, ' шоссе ');
-      s = s.replace(/\bпер\.?\b/gi, 'переулок');
-      s = s.replace(/\bпл\.?\b/gi, 'площадь');
-      s = s.replace(/\bнаб\.?\b/gi, 'набережная');
-      s = s.replace(/\bтуп\.?\b/gi, 'тупик');
-      s = s.replace(/\bобл\.?\b/gi, 'область');
-
-      // 3. Очистка лишних знаков препинания и множественных пробелов
-      s = s
-        .replace(/\s*,\s*/g, ', ')
-        .replace(/,+/g, ',')
-        .replace(/^[,\s]+|[,\s]+$/g, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-
-      return s;
-    }
-
-    // Геокодирование через прямой API Яндекс Геокодера
+    // Геокодирование через прямой API Яндекс Геокодера (исходный адрес без искажения сокращений)
     async function geocodeAddress(rawAddr, cache) {
       if (!rawAddr || !rawAddr.trim()) return null;
       const clean = rawAddr.trim();
       if (cache[clean]) return cache[clean];
 
-      const normAddr = normalizeAddressForGeocoder(clean) || clean;
-
       const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-      const queryYandex = async (address) => {
-        try {
-          await delay(150);
-          const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${YANDEX_GEOCODER_KEY}&geocode=${encodeURIComponent(address)}&format=json&results=1&ll=37.6173,55.7558&spn=2.5,2.5`;
-          const res = await fetch(url);
-          if (!res.ok) return null;
+      try {
+        await delay(150);
+        const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${YANDEX_GEOCODER_KEY}&geocode=${encodeURIComponent(clean)}&format=json&results=1&ll=37.6173,55.7558&spn=2.5,2.5`;
+        const res = await fetch(url);
+        if (res.ok) {
           const data = await res.json();
           const pos = data?.response?.GeoObjectCollection?.featureMember?.[0]?.GeoObject?.Point?.pos;
           if (pos && typeof pos === 'string') {
             const [lon, lat] = pos.split(' ').map(Number);
             if (!isNaN(lat) && !isNaN(lon)) {
-              return { lat, lon };
+              const coords = { lat, lon };
+              cache[clean] = coords;
+              saveGeoCache(cache);
+              return coords;
             }
           }
-        } catch (e) {
-          console.warn('Ошибка запроса к Яндекс Геокодеру:', address, e);
         }
-        return null;
-      };
-
-      // 1. Сначала пробуем нормализованный адрес (без этажей и квартир)
-      let coords = await queryYandex(normAddr);
-
-      // 2. Если не найден, пробуем исходный адрес
-      if (!coords && normAddr !== clean) {
-        coords = await queryYandex(clean);
-      }
-
-      // Сохраняем в кэш только успешно найденные координаты
-      if (coords && typeof coords.lat === 'number' && typeof coords.lon === 'number' && !isNaN(coords.lat) && !isNaN(coords.lon)) {
-        cache[clean] = coords;
-        saveGeoCache(cache);
-        return coords;
+      } catch (e) {
+        console.warn('Ошибка запроса к Яндекс Геокодеру:', clean, e);
       }
 
       return null;
@@ -1793,11 +1745,11 @@
                 )}
 
                 {/* Контейнер интерактивной карты Leaflet */}
-                <div id="dispatcher-map-container" className="flex-1 w-full min-h-[350px] relative z-0"></div>
+                <div id="dispatcher-map-container" className="flex-1 w-full min-h-[220px] relative z-0"></div>
 
                 {/* Панель заявок без геопозиции (нераспознанные адреса или монтажи без адреса) */}
                 {unresolvedPoints.length > 0 && (
-                  <div className={`p-2.5 sm:p-3 border-t text-xs max-h-[140px] overflow-y-auto ${t('border-gray-700 bg-[#1A1D21]', 'border-slate-200 bg-amber-50 text-amber-950', 'border-pink-200 bg-pink-50 text-pink-950', 'border-[#253652] bg-[#0E1524] text-blue-100', 'border-emerald-200 bg-emerald-50 text-emerald-950', 'border-[#3E2F2A] bg-[#181210] text-[#D7B399]', 'border-slate-200 bg-amber-50 text-amber-950')}`}>
+                  <div className={`flex-shrink-0 z-10 p-2.5 sm:p-3 border-t text-xs max-h-[140px] overflow-y-auto ${t('border-gray-700 bg-[#1A1D21]', 'border-slate-200 bg-amber-50 text-amber-950', 'border-pink-200 bg-pink-50 text-pink-950', 'border-[#253652] bg-[#0E1524] text-blue-100', 'border-emerald-200 bg-emerald-50 text-emerald-950', 'border-[#3E2F2A] bg-[#181210] text-[#D7B399]', 'border-slate-200 bg-amber-50 text-amber-950')}`}>
                     <div className="font-bold mb-1.5 flex items-center gap-1.5 text-amber-500">
                       <span>⚠️</span>
                       <span>Не отображаются на карте ({unresolvedPoints.length}):</span>

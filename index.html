@@ -58,6 +58,23 @@
       user-select: none;
       animation: snowfall linear infinite;
     }
+    .modern-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(156, 163, 175, 0.45) transparent;
+    }
+    .modern-scroll::-webkit-scrollbar {
+      height: 6px;
+    }
+    .modern-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .modern-scroll::-webkit-scrollbar-thumb {
+      background: rgba(156, 163, 175, 0.4);
+      border-radius: 9999px;
+    }
+    .modern-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(156, 163, 175, 0.7);
+    }
   </style>
 </head>
 <body class="antialiased min-h-screen">
@@ -437,6 +454,10 @@
         try {
           localStorage.setItem('expert_route_role', appRole);
         } catch (e) {}
+        if (appRole === 'dispatcher') {
+          setSourceMode('navision');
+          sourceModeRef.current = 'navision';
+        }
       }, [appRole]);
 
       // Точки одиночного режима ("Эксперт")
@@ -603,6 +624,8 @@
       const [ocrProgress, setOcrProgress] = useState(0);
       const [ocrStatusText, setOcrStatusText] = useState('');
       const [sourceMode, setSourceMode] = useState(() => {
+        const savedRole = localStorage.getItem('expert_route_role') || 'expert';
+        if (savedRole === 'dispatcher') return 'navision';
         return localStorage.getItem('expert_route_source_mode') || 'tablet'; // 'tablet' | 'navision'
       });
       const sourceModeRef = useRef(sourceMode);
@@ -612,6 +635,9 @@
           localStorage.setItem('expert_route_source_mode', sourceMode);
         } catch (e) {}
       }, [sourceMode]);
+
+      // Сворачивание блока загрузки скриншотов
+      const [showUploadSection, setShowUploadSection] = useState(true);
 
       // Использование серверного ИИ для распознавания
       const [useAiOcr, setUseAiOcr] = useState(() => {
@@ -631,7 +657,7 @@
 
       const [ocrError, setOcrError] = useState('');
       const [rawOcrText, setRawOcrText] = useState('');
-      const [showRawText, setShowRawText] = useState(true);
+      const [showRawText, setShowRawText] = useState(false);
       const [copiedRawText, setCopiedRawText] = useState(false);
       const [isDragging, setIsDragging] = useState(false);
 
@@ -1611,6 +1637,25 @@
                   </button>
                 </div>
 
+                {/* Тумблер: Режим диспетчера */}
+                <div className={`p-3 rounded-xl border flex justify-between items-center mb-3 ${t('bg-[#1E2125] border-gray-700', 'bg-gray-50 border-gray-300', 'bg-pink-100 border-pink-200', 'bg-blue-100 border-blue-200', 'bg-emerald-100 border-emerald-200', 'bg-[#EFEBE9] border-[#D7CCC8]', 'bg-[#F4F5F7] border-gray-200')}`}>
+                  <span className="text-sm font-bold">Режим диспетчера</span>
+                  <label className="relative inline-flex items-center cursor-pointer min-h-[44px]">
+                    <input
+                      type="checkbox"
+                      checked={appRole === 'dispatcher'}
+                      onChange={(e) => setAppRole(e.target.checked ? 'dispatcher' : 'expert')}
+                      className="sr-only peer"
+                    />
+                    <div className={`w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[14px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all ${
+                      theme === 'expert' ? 'peer-checked:bg-[#D32F2F]' :
+                      theme === 'expert-dark' ? 'peer-checked:bg-[#C62828]' :
+                      theme === 'newyear' ? 'peer-checked:bg-[#15803D]' :
+                      t('peer-checked:bg-[#FFB300]', 'peer-checked:bg-amber-600', 'peer-checked:bg-pink-600', 'peer-checked:bg-blue-600', 'peer-checked:bg-emerald-600', 'peer-checked:bg-[#6D4C41]', 'peer-checked:bg-[#C62828]')
+                    }`}></div>
+                  </label>
+                </div>
+
                 <div className={`p-3 rounded-xl border flex justify-between items-center mb-4 ${t('bg-[#1E2125] border-gray-700', 'bg-gray-50 border-gray-300', 'bg-pink-100 border-pink-200', 'bg-blue-100 border-blue-200', 'bg-emerald-100 border-emerald-200', 'bg-[#EFEBE9] border-[#D7CCC8]', 'bg-[#F4F5F7] border-gray-200')}`}>
                   <span className="text-sm font-bold">Тема оформления</span>
                   <button 
@@ -1890,35 +1935,6 @@
               </div>
             </header>
 
-            {/* Переключатель роли: Эксперт / Диспетчер */}
-            <div className={`p-1.5 rounded-2xl border mb-4 grid grid-cols-2 gap-1.5 shadow-sm ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
-              <button
-                type="button"
-                onClick={() => setAppRole('expert')}
-                className={`min-h-[44px] px-3 py-2 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
-                  appRole === 'expert'
-                    ? t('bg-[#FFB300] text-black shadow-sm', 'bg-amber-500 text-white shadow-sm', 'bg-pink-500 text-white shadow-sm', 'bg-sky-500 text-white shadow-sm', 'bg-emerald-600 text-white shadow-sm', 'bg-[#6D4C41] text-white shadow-sm', 'bg-[#C62828] text-white shadow-sm')
-                    : 'text-current opacity-70 hover:opacity-100'
-                }`}
-              >
-                <span>👤</span>
-                <span>Эксперт</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setAppRole('dispatcher')}
-                className={`min-h-[44px] px-3 py-2 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
-                  appRole === 'dispatcher'
-                    ? t('bg-[#FFB300] text-black shadow-sm', 'bg-amber-500 text-white shadow-sm', 'bg-pink-500 text-white shadow-sm', 'bg-sky-500 text-white shadow-sm', 'bg-emerald-600 text-white shadow-sm', 'bg-[#6D4C41] text-white shadow-sm', 'bg-[#C62828] text-white shadow-sm')
-                    : 'text-current opacity-70 hover:opacity-100'
-                }`}
-              >
-                <span>🎛️</span>
-                <span>Диспетчер</span>
-              </button>
-            </div>
-
             {/* Панель управления диспетчера: Вкладки экспертов + Карта пересечений */}
             {appRole === 'dispatcher' && (
               <section className={`rounded-2xl shadow-sm border p-3 sm:p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
@@ -1926,9 +1942,14 @@
                 {/* Верхняя строка панели: кнопка Карты и общее число точек */}
                 <div className="flex items-center justify-between gap-2 mb-3">
                   <div className="flex items-center gap-2">
-                    <span className="text-base sm:text-lg">🎛️</span>
+                    <svg className="w-5 h-5 opacity-90 flex-shrink-0" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="9" cy="7" r="4"></circle>
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
                     <span className="font-black text-sm uppercase tracking-wide">
-                      Эксперты на линии ({dispatcherExperts.length})
+                      Маршруты экспертов ({dispatcherExperts.length})
                     </span>
                   </div>
 
@@ -1946,8 +1967,8 @@
                   </button>
                 </div>
 
-                {/* Горизонтальный список вкладок экспертов */}
-                <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                {/* Сетка вкладок экспертов (компактная, 2 ряда, современный тонкий скролл) */}
+                <div className="grid grid-rows-2 grid-flow-col auto-cols-max gap-2 overflow-x-auto pb-2.5 modern-scroll items-center">
                   {dispatcherExperts.map((exp) => {
                     const isActive = exp.id === activeExpertId;
                     const count = exp.points ? exp.points.length : 0;
@@ -1955,7 +1976,7 @@
                       <div
                         key={exp.id}
                         onClick={() => setActiveExpertId(exp.id)}
-                        className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer flex-shrink-0 transition-all min-h-[44px] select-none ${
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border cursor-pointer flex-shrink-0 transition-all min-h-[36px] text-xs sm:text-sm select-none ${
                           isActive
                             ? 'ring-2 ring-offset-1 ring-blue-500 shadow-md font-bold'
                             : 'opacity-70 hover:opacity-100 hover:shadow-sm'
@@ -1966,12 +1987,12 @@
                       >
                         {/* Цветной кружок эксперта */}
                         <span
-                          className="w-3.5 h-3.5 rounded-full flex-shrink-0 shadow-sm"
+                          className="w-3 h-3 rounded-full flex-shrink-0 shadow-sm"
                           style={{ backgroundColor: exp.color }}
                         />
-                        <span className="text-xs sm:text-sm whitespace-nowrap">{exp.name}</span>
+                        <span className="whitespace-nowrap font-medium">{exp.name}</span>
                         <span
-                          className="text-[11px] px-1.5 py-0.5 rounded-full font-mono font-bold"
+                          className="text-[11px] px-1.5 py-0.2 rounded-full font-mono font-bold"
                           style={{ backgroundColor: exp.color + '25', color: exp.color }}
                         >
                           {count}
@@ -1985,7 +2006,7 @@
                               e.stopPropagation();
                               handleRemoveExpert(exp.id);
                             }}
-                            className="w-6 h-6 rounded-full flex items-center justify-center opacity-50 hover:opacity-100 hover:bg-black/10 text-xs ml-0.5"
+                            className="w-5 h-5 rounded-full flex items-center justify-center opacity-50 hover:opacity-100 hover:bg-black/10 text-xs ml-0.5"
                             title={`Удалить вкладку ${exp.name}`}
                           >
                             ✕
@@ -1999,7 +2020,7 @@
                   <button
                     type="button"
                     onClick={handleAddExpert}
-                    className={`min-h-[44px] px-3 py-2 rounded-xl border border-dashed flex items-center gap-1.5 text-xs sm:text-sm font-semibold flex-shrink-0 transition-all opacity-80 hover:opacity-100 ${t('border-gray-600 hover:bg-[#33363B]', 'border-slate-400 hover:bg-slate-100', 'border-pink-300 hover:bg-pink-100', 'border-blue-400/40 hover:bg-[#162238]', 'border-emerald-300 hover:bg-emerald-100', 'border-[#8D6E63] hover:bg-[#221A17]', 'border-slate-400 hover:bg-slate-100')}`}
+                    className={`min-h-[36px] px-3 py-1.5 rounded-xl border border-dashed flex items-center gap-1.5 text-xs sm:text-sm font-semibold flex-shrink-0 transition-all opacity-80 hover:opacity-100 ${t('border-gray-600 hover:bg-[#33363B]', 'border-slate-400 hover:bg-slate-100', 'border-pink-300 hover:bg-pink-100', 'border-blue-400/40 hover:bg-[#162238]', 'border-emerald-300 hover:bg-emerald-100', 'border-[#8D6E63] hover:bg-[#221A17]', 'border-slate-400 hover:bg-slate-100')}`}
                     title="Добавить ещё одного эксперта"
                   >
                     <span>+</span>
@@ -2025,83 +2046,99 @@
               </section>
             )}
 
-            {/* 2. Блок загрузки изображений и OCR */}
-            <section className={`rounded-2xl shadow-sm border p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
-              <h2 className={`text-sm font-bold uppercase tracking-wider mb-3 ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
-                <span>Загрузка скриншотов заявок</span>
-              </h2>
-
-              {/* Переключатель режима источника */}
-              <div className="grid grid-cols-2 gap-2 mb-3">
-                <button
-                  type="button"
-                  onClick={() => setSourceMode('tablet')}
-                  className={`min-h-[48px] px-3 py-2.5 rounded-xl font-medium text-[16px] sm:text-sm flex items-center justify-center gap-2 border transition-all ${
-                    sourceMode === 'tablet'
-                      ? t('bg-[#FFB300] border-[#FFB300] text-black shadow-sm', 'bg-amber-500 border-amber-600 text-white shadow-sm', 'bg-pink-500 border-pink-600 text-white shadow-sm', 'bg-sky-500 border-sky-600 text-white shadow-sm', 'bg-emerald-600 border-emerald-700 text-white shadow-sm', 'bg-[#6D4C41] border-[#5D4037] text-white shadow-sm', 'bg-[#C62828] border-[#B71C1C] text-white shadow-sm')
-                      : t('bg-[#1E2125] border-gray-700 text-gray-300 hover:bg-[#33363B]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100', 'bg-pink-50 border-pink-200 text-pink-700 hover:bg-pink-100', 'bg-[#0B132B] border-[#253652] text-blue-200 hover:bg-[#162238]', 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100', 'bg-[#16110F] border-[#3E2F2A] text-[#D7B399] hover:bg-[#221A17]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100')
-                  }`}
-                >
-                  <span>📱</span>
-                  <span>Планшет</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSourceMode('navision')}
-                  className={`min-h-[48px] px-3 py-2.5 rounded-xl font-medium text-[16px] sm:text-sm flex items-center justify-center gap-2 border transition-all ${
-                    sourceMode === 'navision'
-                      ? t('bg-[#FFB300] border-[#FFB300] text-black shadow-sm', 'bg-amber-500 border-amber-600 text-white shadow-sm', 'bg-pink-500 border-pink-600 text-white shadow-sm', 'bg-sky-500 border-sky-600 text-white shadow-sm', 'bg-emerald-600 border-emerald-700 text-white shadow-sm', 'bg-[#6D4C41] border-[#5D4037] text-white shadow-sm', 'bg-[#C62828] border-[#B71C1C] text-white shadow-sm')
-                      : t('bg-[#1E2125] border-gray-700 text-gray-300 hover:bg-[#33363B]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100', 'bg-pink-50 border-pink-200 text-pink-700 hover:bg-pink-100', 'bg-[#0B132B] border-[#253652] text-blue-200 hover:bg-[#162238]', 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100', 'bg-[#16110F] border-[#3E2F2A] text-[#D7B399] hover:bg-[#221A17]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100')
-                  }`}
-                >
-                  <span>💻</span>
-                  <span>Navision</span>
-                </button>
+            {/* 2. Блок загрузки изображений и OCR (сворачиваемый) */}
+            <section className={`rounded-2xl shadow-sm border p-4 mb-4 transition-all ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
+              <div
+                onClick={() => setShowUploadSection(prev => !prev)}
+                className="flex items-center justify-between cursor-pointer select-none group"
+              >
+                <h2 className={`text-sm font-bold uppercase tracking-wider ${t('text-gray-400 group-hover:text-gray-200', 'text-slate-500 group-hover:text-slate-800', 'text-pink-600 group-hover:text-pink-800', 'text-blue-300 group-hover:text-blue-100', 'text-emerald-700 group-hover:text-emerald-900', 'text-[#D7B399] group-hover:text-[#F5EBE6]', 'text-slate-500 group-hover:text-slate-800')} flex items-center gap-2`}>
+                  <span>Загрузка скриншотов заявок</span>
+                  {images.length > 0 && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 font-mono font-normal">
+                      {images.length} фото
+                    </span>
+                  )}
+                </h2>
+                <span className="text-sm font-bold opacity-70 group-hover:opacity-100 transition-transform">
+                  {showUploadSection ? '▾' : '▸'}
+                </span>
               </div>
 
-              {/* Переключатель распознавания через ИИ */}
-              <button
-                type="button"
-                onClick={() => setUseAiOcr(prev => !prev)}
-                className={`w-full min-h-[44px] sm:min-h-[46px] px-3.5 py-2.5 rounded-xl text-sm font-semibold flex items-center justify-between border transition-all mb-3 ${
-                  useAiOcr
-                    ? t(
-                        'bg-[#FFB300]/15 border-[#FFB300]/50 text-[#FFB300]',
-                        'bg-amber-50 border-amber-300 text-amber-900',
-                        'bg-pink-50 border-pink-300 text-pink-700',
-                        'bg-[#131D31] border-sky-500/50 text-sky-300',
-                        'bg-emerald-50 border-emerald-300 text-emerald-800',
-                        'bg-[#221A17] border-[#D7B399]/40 text-[#D7B399]',
-                        'bg-[#FCE8E8] border-[#C62828]/40 text-[#9A1B24]'
-                      )
-                    : t(
-                        'bg-[#1E2125] border-gray-700 text-gray-400 hover:text-gray-200',
-                        'bg-slate-50 border-slate-200 text-slate-500 hover:text-slate-700',
-                        'bg-pink-50/50 border-pink-200 text-pink-400 hover:text-pink-600',
-                        'bg-[#0B132B] border-[#253652] text-blue-300/50 hover:text-blue-200',
-                        'bg-emerald-50/50 border-emerald-200 text-emerald-600/70 hover:text-emerald-800',
-                        'bg-[#16110F] border-[#3E2F2A] text-[#8D6E63] hover:text-[#D7B399]',
-                        'bg-slate-50 border-slate-200 text-slate-500 hover:text-slate-700'
-                      )
-                }`}
-                title={useAiOcr ? 'ИИ включен (авто-fallback на локальный OCR при отсутствии сети)' : 'ИИ выключен (используется только локальный Tesseract.js)'}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-base">✨</span>
-                  <span>Распознавание ИИ</span>
-                  <span className="text-xs opacity-70 font-normal hidden sm:inline">(сервер + авто-fallback)</span>
-                </div>
-                <div className={`w-10 h-6 flex items-center rounded-full p-1 transition-colors ${
-                  useAiOcr
-                    ? t('bg-[#FFB300]', 'bg-amber-500', 'bg-pink-500', 'bg-sky-500', 'bg-emerald-600', 'bg-[#8D6E63]', 'bg-[#C62828]')
-                    : 'bg-gray-600'
-                }`}>
-                  <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
-                    useAiOcr ? 'translate-x-4' : 'translate-x-0'
-                  }`} />
-                </div>
-              </button>
+              {showUploadSection && (
+                <div className="mt-3">
+                  {/* Переключатель режима источника (только для режима Эксперта) */}
+                  {appRole !== 'dispatcher' && (
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      <button
+                        type="button"
+                        onClick={() => setSourceMode('tablet')}
+                        className={`min-h-[48px] px-3 py-2.5 rounded-xl font-medium text-[16px] sm:text-sm flex items-center justify-center gap-2 border transition-all ${
+                          sourceMode === 'tablet'
+                            ? t('bg-[#FFB300] border-[#FFB300] text-black shadow-sm', 'bg-amber-500 border-amber-600 text-white shadow-sm', 'bg-pink-500 border-pink-600 text-white shadow-sm', 'bg-sky-500 border-sky-600 text-white shadow-sm', 'bg-emerald-600 border-emerald-700 text-white shadow-sm', 'bg-[#6D4C41] border-[#5D4037] text-white shadow-sm', 'bg-[#C62828] border-[#B71C1C] text-white shadow-sm')
+                            : t('bg-[#1E2125] border-gray-700 text-gray-300 hover:bg-[#33363B]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100', 'bg-pink-50 border-pink-200 text-pink-700 hover:bg-pink-100', 'bg-[#0B132B] border-[#253652] text-blue-200 hover:bg-[#162238]', 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100', 'bg-[#16110F] border-[#3E2F2A] text-[#D7B399] hover:bg-[#221A17]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100')
+                        }`}
+                      >
+                        <span>📱</span>
+                        <span>Планшет</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSourceMode('navision')}
+                        className={`min-h-[48px] px-3 py-2.5 rounded-xl font-medium text-[16px] sm:text-sm flex items-center justify-center gap-2 border transition-all ${
+                          sourceMode === 'navision'
+                            ? t('bg-[#FFB300] border-[#FFB300] text-black shadow-sm', 'bg-amber-500 border-amber-600 text-white shadow-sm', 'bg-pink-500 border-pink-600 text-white shadow-sm', 'bg-sky-500 border-sky-600 text-white shadow-sm', 'bg-emerald-600 border-emerald-700 text-white shadow-sm', 'bg-[#6D4C41] border-[#5D4037] text-white shadow-sm', 'bg-[#C62828] border-[#B71C1C] text-white shadow-sm')
+                            : t('bg-[#1E2125] border-gray-700 text-gray-300 hover:bg-[#33363B]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100', 'bg-pink-50 border-pink-200 text-pink-700 hover:bg-pink-100', 'bg-[#0B132B] border-[#253652] text-blue-200 hover:bg-[#162238]', 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100', 'bg-[#16110F] border-[#3E2F2A] text-[#D7B399] hover:bg-[#221A17]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100')
+                        }`}
+                      >
+                        <span>💻</span>
+                        <span>Navision</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Переключатель распознавания через ИИ */}
+                  <button
+                    type="button"
+                    onClick={() => setUseAiOcr(prev => !prev)}
+                    className={`w-full min-h-[44px] sm:min-h-[46px] px-3.5 py-2.5 rounded-xl text-sm font-semibold flex items-center justify-between border transition-all mb-3 ${
+                      useAiOcr
+                        ? t(
+                            'bg-[#FFB300]/15 border-[#FFB300]/50 text-[#FFB300]',
+                            'bg-amber-50 border-amber-300 text-amber-900',
+                            'bg-pink-50 border-pink-300 text-pink-700',
+                            'bg-[#131D31] border-sky-500/50 text-sky-300',
+                            'bg-emerald-50 border-emerald-300 text-emerald-800',
+                            'bg-[#221A17] border-[#D7B399]/40 text-[#D7B399]',
+                            'bg-[#FCE8E8] border-[#C62828]/40 text-[#9A1B24]'
+                          )
+                        : t(
+                            'bg-[#1E2125] border-gray-700 text-gray-400 hover:text-gray-200',
+                            'bg-slate-50 border-slate-200 text-slate-500 hover:text-slate-700',
+                            'bg-pink-50/50 border-pink-200 text-pink-400 hover:text-pink-600',
+                            'bg-[#0B132B] border-[#253652] text-blue-300/50 hover:text-blue-200',
+                            'bg-emerald-50/50 border-emerald-200 text-emerald-600/70 hover:text-emerald-800',
+                            'bg-[#16110F] border-[#3E2F2A] text-[#8D6E63] hover:text-[#D7B399]',
+                            'bg-slate-50 border-slate-200 text-slate-500 hover:text-slate-700'
+                          )
+                    }`}
+                    title={useAiOcr ? 'ИИ включен (авто-fallback на локальный OCR при отсутствии сети)' : 'ИИ выключен (используется только локальный Tesseract.js)'}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">✨</span>
+                      <span>Распознавание ИИ</span>
+                    </div>
+                    <div className={`w-10 h-6 flex items-center rounded-full p-1 transition-colors ${
+                      useAiOcr
+                        ? t('bg-[#FFB300]', 'bg-amber-500', 'bg-pink-500', 'bg-sky-500', 'bg-emerald-600', 'bg-[#8D6E63]', 'bg-[#C62828]')
+                        : 'bg-gray-600'
+                    }`}>
+                      <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                        useAiOcr ? 'translate-x-4' : 'translate-x-0'
+                      }`} />
+                    </div>
+                  </button>
 
               {/* Drag and Drop область */}
               <div
@@ -2212,6 +2249,8 @@
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
                 </div>
               )}
             </section>

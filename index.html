@@ -1902,22 +1902,34 @@
                 </div>
 
                 {/* Тумблер: Режим диспетчера */}
-                <div className={`p-3 rounded-xl border flex justify-between items-center mb-3 ${t('bg-[#1E2125] border-gray-700', 'bg-gray-50 border-gray-300', 'bg-pink-100 border-pink-200', 'bg-blue-100 border-blue-200', 'bg-emerald-100 border-emerald-200', 'bg-[#EFEBE9] border-[#D7CCC8]', 'bg-[#F4F5F7] border-gray-200')}`}>
+                <div 
+                  onClick={() => setAppRole(prev => prev === 'dispatcher' ? 'expert' : 'dispatcher')}
+                  className={`p-3 rounded-xl border flex justify-between items-center mb-3 cursor-pointer select-none transition-colors ${t('bg-[#1E2125] border-gray-700', 'bg-gray-50 border-gray-300', 'bg-pink-100 border-pink-200', 'bg-blue-100 border-blue-200', 'bg-emerald-100 border-emerald-200', 'bg-[#EFEBE9] border-[#D7CCC8]', 'bg-[#F4F5F7] border-gray-200')}`}
+                >
                   <span className="text-sm font-bold">Режим диспетчера</span>
-                  <label className="relative inline-flex items-center cursor-pointer min-h-[44px]">
-                    <input
-                      type="checkbox"
-                      checked={appRole === 'dispatcher'}
-                      onChange={(e) => setAppRole(e.target.checked ? 'dispatcher' : 'expert')}
-                      className="sr-only peer"
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={appRole === 'dispatcher'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setAppRole(prev => prev === 'dispatcher' ? 'expert' : 'dispatcher');
+                    }}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none ${
+                      appRole === 'dispatcher'
+                        ? (theme === 'expert' ? 'bg-[#D32F2F]' :
+                           theme === 'expert-dark' ? 'bg-[#C62828]' :
+                           theme === 'newyear' ? 'bg-[#15803D]' :
+                           t('bg-[#FFB300]', 'bg-amber-600', 'bg-pink-600', 'bg-blue-600', 'bg-emerald-600', 'bg-[#6D4C41]', 'bg-[#C62828]'))
+                        : 'bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                        appRole === 'dispatcher' ? 'translate-x-[22px]' : 'translate-x-[2px]'
+                      }`}
                     />
-                    <div className={`w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[14px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all ${
-                      theme === 'expert' ? 'peer-checked:bg-[#D32F2F]' :
-                      theme === 'expert-dark' ? 'peer-checked:bg-[#C62828]' :
-                      theme === 'newyear' ? 'peer-checked:bg-[#15803D]' :
-                      t('peer-checked:bg-[#FFB300]', 'peer-checked:bg-amber-600', 'peer-checked:bg-pink-600', 'peer-checked:bg-blue-600', 'peer-checked:bg-emerald-600', 'peer-checked:bg-[#6D4C41]', 'peer-checked:bg-[#C62828]')
-                    }`}></div>
-                  </label>
+                  </button>
                 </div>
 
                 <div className={`p-3 rounded-xl border flex justify-between items-center mb-4 ${t('bg-[#1E2125] border-gray-700', 'bg-gray-50 border-gray-300', 'bg-pink-100 border-pink-200', 'bg-blue-100 border-blue-200', 'bg-emerald-100 border-emerald-200', 'bg-[#EFEBE9] border-[#D7CCC8]', 'bg-[#F4F5F7] border-gray-200')}`}>

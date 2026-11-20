@@ -114,58 +114,164 @@
       { id: 'exp_4', name: 'Эксперт 4', color: '#9333ea', points: [] }
     ];
 
-    // Кэш геокодирования адресов (Nominatim / OSM)
+    // Кэш геокодирования адресов (только валидные координаты { lat, lon })
     function getGeoCache() {
       try {
         const saved = localStorage.getItem('expert_route_geo_cache');
-        return saved ? JSON.parse(saved) : {};
+        if (!saved) return {};
+        const parsed = JSON.parse(saved);
+        if (typeof parsed !== 'object' || parsed === null) return {};
+        const cleaned = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v && typeof v.lat === 'number' && typeof v.lon === 'number' && !isNaN(v.lat) && !isNaN(v.lon)) {
+            cleaned[k] = { lat: v.lat, lon: v.lon };
+          }
+        }
+        return cleaned;
       } catch (e) {
         return {};
       }
     }
     function saveGeoCache(cache) {
       try {
-        localStorage.setItem('expert_route_geo_cache', JSON.stringify(cache));
+        const toSave = {};
+        for (const [k, v] of Object.entries(cache || {})) {
+          if (v && typeof v.lat === 'number' && typeof v.lon === 'number' && !isNaN(v.lat) && !isNaN(v.lon)) {
+            toSave[k] = { lat: v.lat, lon: v.lon };
+          }
+        }
+        localStorage.setItem('expert_route_geo_cache', JSON.stringify(toSave));
       } catch (e) {}
     }
 
-    // Геокодирование одного адреса через Nominatim с очисткой и fallback на "Москва"
+    // Нормализация адреса перед геокодированием: удаление хвостов и раскрытие сокращений
+    function normalizeAddressForGeocoder(rawAddress) {
+      if (!rawAddress) return '';
+      let s = rawAddress.trim();
+
+      // 1. Удаление хвостов (этажи, квартиры, помещения, комнаты, офисы, подъезды)
+      s = s.replace(/,?\s*\d*\s*этаж.*$/gi, '');
+      s = s.replace(/,?\s*(?:кв|квартира|пом|помещ|комн?|офис)\.?\s*[\dа-яёА-ЯЁ\/-]*.*$/gi, '');
+      s = s.replace(/,?\s*подъезд\s*\d.*$/gi, '');
+
+      // 2. Раскрытие частых сокращений
+      s = s.replace(/\bМО\s*,/gi, 'Московская область,');
+      s = s.replace(/\bпр-кт\.?\b/gi, 'проспект');
+      s = s.replace(/\bб-р\.?\b/gi, 'бульвар');
+      s = s.replace(/(?:^|\s)ш\.?(?=\s|[0-9]|$)/gi, ' шоссе ');
+      s = s.replace(/\bпер\.?\b/gi, 'переулок');
+      s = s.replace(/\bпл\.?\b/gi, 'площадь');
+      s = s.replace(/\bнаб\.?\b/gi, 'набережная');
+      s = s.replace(/\bтуп\.?\b/gi, 'тупик');
+      s = s.replace(/\bобл\.?\b/gi, 'область');
+
+      // 3. Убираем лишние префиксы г., д. (оставляя название города и номер дома)
+      s = s.replace(/(?:^|[,\s])г\.?\s+([А-ЯЁа-яё])/g, ' $1');
+      s = s.replace(/(?:^|[,\s])(?:д|дом)\.?\s*(\d+)/gi, ', $1');
+
+      // 4. Очистка лишних знаков препинания и множественных пробелов
+      s = s
+        .replace(/\s*,\s*/g, ', ')
+        .replace(/,+/g, ',')
+        .replace(/^[,\s]+|[,\s]+$/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+      return s;
+    }
+
+    // Отсечение корпуса и строения для повторного запроса, если они мешают поиску
+    function removeCorpAndBuilding(addr) {
+      if (!addr) return '';
+      return addr
+        .replace(/,?\s*(?:корп|корпус|к|строение|стр)\.?\s*[\dа-яёА-ЯЁ\/-]*.*/gi, '')
+        .replace(/[,\s]+$/, '')
+        .trim();
+    }
+
+    // Каскадное геокодирование адреса (Photon Komoot OSM -> без корпуса -> Nominatim)
     async function geocodeAddress(rawAddr, cache) {
       if (!rawAddr || !rawAddr.trim()) return null;
       const clean = rawAddr.trim();
       if (cache[clean]) return cache[clean];
 
-      // Очистка от квартир, этажей и помещений для точности поиска OSM
-      const query = clean
-        .replace(/(?:кв|квартира|помещ|пом|подъезд|эт|этаж)\.?\s*\d.*$/gi, '')
-        .replace(/^[,\s]+|[,\s]+$/g, '')
-        .trim();
+      const normAddr = normalizeAddressForGeocoder(clean);
+      if (!normAddr) return null;
 
-      const searchOSM = async (q) => {
+      const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+      // 1. Поиск через Photon Komoot OSM с гео-приоритетом Москвы и МО (быстрый и точный)
+      const searchPhoton = async (q) => {
         try {
+          await delay(250);
+          const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1&lat=55.7558&lon=37.6173`;
+          const res = await fetch(url);
+          if (!res.ok) return null;
+          const data = await res.json();
+          const coords = data?.features?.[0]?.geometry?.coordinates;
+          if (Array.isArray(coords) && coords.length >= 2) {
+            const lon = parseFloat(coords[0]);
+            const lat = parseFloat(coords[1]);
+            if (!isNaN(lat) && !isNaN(lon)) {
+              return { lat, lon };
+            }
+          }
+        } catch (e) {
+          console.warn('Ошибка Photon геокодирования:', q, e);
+        }
+        return null;
+      };
+
+      // 2. Резервный поиск через Nominatim OSM
+      const searchNominatim = async (q) => {
+        try {
+          await delay(1100);
           const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(q)}`;
           const res = await fetch(url, { headers: { 'Accept-Language': 'ru' } });
           if (!res.ok) return null;
           const list = await res.json();
           if (Array.isArray(list) && list.length > 0) {
-            return { lat: parseFloat(list[0].lat), lon: parseFloat(list[0].lon) };
+            const lat = parseFloat(list[0].lat);
+            const lon = parseFloat(list[0].lon);
+            if (!isNaN(lat) && !isNaN(lon)) {
+              return { lat, lon };
+            }
           }
         } catch (e) {
-          console.warn('Ошибка запроса геокодирования:', q, e);
+          console.warn('Ошибка Nominatim геокодирования:', q, e);
         }
         return null;
       };
 
-      let coords = await searchOSM(query);
-      if (!coords && !/(москва|обл|санкт|петербург)/i.test(query)) {
-        coords = await searchOSM('Москва, ' + query);
+      // Шаг 1: Быстрый поиск нормализованного адреса в Photon
+      let coords = await searchPhoton(normAddr);
+
+      // Шаг 2: Если корпус/строение мешают поиску, пробуем без них в Photon
+      const addrWithoutCorp = removeCorpAndBuilding(normAddr);
+      if (!coords && addrWithoutCorp && addrWithoutCorp !== normAddr) {
+        coords = await searchPhoton(addrWithoutCorp);
       }
 
-      if (coords) {
+      // Если адрес без указания города/региона, пробуем с префиксом "Москва" в Photon
+      if (!coords && !/(москва|обл|санкт|петербург)/i.test(normAddr)) {
+        coords = await searchPhoton('Москва, ' + (addrWithoutCorp || normAddr));
+      }
+
+      // Шаг 3: Резервный поиск через Nominatim (если Photon не нашёл)
+      if (!coords) {
+        coords = await searchNominatim(addrWithoutCorp || normAddr);
+      }
+      if (!coords && !/(москва|обл|санкт|петербург)/i.test(normAddr)) {
+        coords = await searchNominatim('Москва, ' + (addrWithoutCorp || normAddr));
+      }
+
+      // Сохраняем в кэш только успешно найденные координаты
+      if (coords && typeof coords.lat === 'number' && typeof coords.lon === 'number' && !isNaN(coords.lat) && !isNaN(coords.lon)) {
         cache[clean] = coords;
         saveGeoCache(cache);
         return coords;
       }
+
       return null;
     }
 
@@ -843,7 +949,6 @@
                 progressCount++;
                 setGeocodingStatus(`Поиск координат (${progressCount} из ${totalToFetch}): ${cleanAddr.substring(0, 30)}...`);
                 coords = await geocodeAddress(cleanAddr, geoCache);
-                await new Promise(r => setTimeout(r, 1100));
               }
 
               if (coords) {

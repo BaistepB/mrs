@@ -1175,13 +1175,14 @@
                       const addr = (item.address || '').trim();
                       const tVal = (item.time || '').trim();
                       const typeVal = (item.type || '').trim();
+                      const ordNum = (item.orderNumber || '').trim();
                       if (addr) {
-                        allNewPoints.push({ address: addr, time: tVal, type: typeVal });
-                        aiPhotoText += (typeVal ? `[${typeVal}] ` : '') + (tVal ? `[${tVal}] ` : '') + addr + '\n';
+                        allNewPoints.push({ address: addr, time: tVal, type: typeVal, orderNumber: ordNum });
+                        aiPhotoText += (ordNum ? `[№${ordNum}] ` : '') + (typeVal ? `[${typeVal}] ` : '') + (tVal ? `[${tVal}] ` : '') + addr + '\n';
                       } else if (typeVal === 'М' || typeVal === 'Д') {
                         // Монтажная заявка без адреса (колонка пустая)
-                        allNewPoints.push({ address: '', time: tVal, type: typeVal });
-                        aiPhotoText += `[${typeVal}] ` + (tVal ? `[${tVal}] ` : '') + 'Монтаж без адреса\n';
+                        allNewPoints.push({ address: '', time: tVal, type: typeVal, orderNumber: ordNum });
+                        aiPhotoText += (ordNum ? `[№${ordNum}] ` : '') + `[${typeVal}] ` + (tVal ? `[${tVal}] ` : '') + 'Монтаж без адреса\n';
                       }
                     }
                     combinedText += aiPhotoText + '\n';
@@ -1344,6 +1345,7 @@
                 if (!item.address && (item.type === 'М' || item.type === 'Д')) {
                   uniqueNewPoints.push({
                     id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+                    orderNumber: item.orderNumber || '',
                     type: item.type,
                     address: '',
                     time: item.time || '',
@@ -1357,6 +1359,7 @@
                   seenKeys.add(key);
                   uniqueNewPoints.push({
                     id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+                    orderNumber: item.orderNumber || '',
                     type: item.type || '',
                     address: item.address,
                     time: item.time || '',
@@ -1525,6 +1528,7 @@
           returnToStart: startType !== 'none' ? returnToStart : false,
           points: points.map((p, idx) => ({
             order: idx + 1,
+            orderNumber: p.orderNumber || '',
             address: p.address || '',
             time: p.time || '',
             taskType: p.type || p.taskType || ''
@@ -1562,6 +1566,7 @@
 
         const restoredPoints = (entry.points || []).map((p, idx) => ({
           id: 'point_' + Date.now() + '_' + idx,
+          orderNumber: p.orderNumber || '',
           address: p.address || '',
           time: p.time || '',
           type: p.taskType || p.type || '',
@@ -1632,7 +1637,7 @@
         }
 
         const rows = [
-          ['Дата', '№', 'Тип', 'Время', 'Адрес', 'Старт', 'Возврат']
+          ['Дата', '№', 'Заявка', 'Тип', 'Время', 'Адрес', 'Старт', 'Возврат']
         ];
 
         datesToExport.forEach(d => {
@@ -1645,6 +1650,7 @@
             rows.push([
               entry.date,
               String(p.order),
+              `"${(p.orderNumber || '').replace(/"/g, '""')}"`,
               p.taskType || '',
               p.time || '',
               `"${(p.address || '').replace(/"/g, '""')}"`,
@@ -1735,11 +1741,20 @@
         });
       };
 
+      const handleUpdatePointOrderNumber = (index, newOrderNumber) => {
+        setPoints(prev => {
+          const updated = [...prev];
+          updated[index] = { ...updated[index], orderNumber: newOrderNumber };
+          return updated;
+        });
+      };
+
       const handleAddManualPoint = () => {
         setPoints(prev => [
           ...prev,
           {
             id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+            orderNumber: '',
             type: '',
             address: '',
             time: '',
@@ -2246,6 +2261,11 @@
                               {entry.points.slice(0, 5).map((pt, pIdx) => (
                                 <div key={pIdx} className="flex items-center gap-1.5 truncate">
                                   <span className="font-mono opacity-50 w-4 text-right flex-shrink-0">{pIdx + 1}.</span>
+                                  {pt.orderNumber && (
+                                    <span className="font-mono font-bold flex-shrink-0 text-[11px] px-1 rounded bg-white/10 opacity-90">
+                                      №{pt.orderNumber}
+                                    </span>
+                                  )}
                                   {pt.taskType && (
                                     <span className="font-bold flex-shrink-0 text-[11px] px-1 rounded bg-white/10">
                                       [{pt.taskType}]
@@ -2997,11 +3017,11 @@
               )}
 
               {/* Список карточек адресов */}
-              <div className="space-y-2.5">
+              <div className="space-y-2">
                 {points.map((pt, idx) => (
                   <div
                     key={pt.id}
-                    className={`p-3 rounded-xl border flex flex-col gap-2 transition-shadow hover:shadow-sm ${t('bg-[#1E2125] border-gray-700', 'bg-slate-50 border-slate-200', 'bg-pink-50/50 border-pink-200', 'bg-[#131D31] border-[#253652]', 'bg-emerald-50/50 border-emerald-200', 'bg-[#221A17] border-[#3E2F2A]', 'bg-slate-50 border-slate-200')}`}
+                    className={`p-2.5 rounded-xl border flex flex-col gap-1.5 transition-shadow hover:shadow-sm ${t('bg-[#1E2125] border-gray-700', 'bg-slate-50 border-slate-200', 'bg-pink-50/50 border-pink-200', 'bg-[#131D31] border-[#253652]', 'bg-emerald-50/50 border-emerald-200', 'bg-[#221A17] border-[#3E2F2A]', 'bg-slate-50 border-slate-200')}`}
                   >
                     <div className="relative flex items-center gap-1.5 sm:gap-2 flex-wrap">
                       {/* Номер точки */}
@@ -3009,11 +3029,40 @@
                         {idx + 1}
                       </div>
 
+                      {/* Поле номера заявки */}
+                      <input
+                        type="text"
+                        value={pt.orderNumber || ''}
+                        onChange={(e) => handleUpdatePointOrderNumber(idx, e.target.value)}
+                        placeholder="№ заявки"
+                        className={`h-8 w-[96px] sm:w-[116px] px-2 rounded-lg font-mono font-semibold text-[16px] sm:text-xs border transition-all focus:outline-none flex-shrink-0 ${
+                          pt.orderNumber
+                            ? t(
+                                'bg-[#FFB300]/15 border-[#FFB300]/40 text-[#FFB300] focus:border-[#FFB300]',
+                                'bg-slate-100 border-slate-300 text-slate-800 focus:border-amber-500',
+                                'bg-pink-100/80 border-pink-300 text-pink-900 focus:border-pink-500',
+                                'bg-[#162032] border-sky-400/40 text-blue-100 focus:border-sky-400',
+                                'bg-emerald-100/80 border-emerald-300 text-emerald-900 focus:border-emerald-600',
+                                'bg-[#281E1B] border-[#D7B399]/40 text-[#D7B399] focus:border-[#D7B399]',
+                                'bg-slate-100 border-slate-300 text-slate-800 focus:border-[#C62828]'
+                              )
+                            : t(
+                                'bg-[#1E2125] border-gray-700 text-gray-300 placeholder:text-gray-500 focus:border-[#FFB300]',
+                                'bg-white border-slate-300 text-slate-700 placeholder:text-slate-400 focus:border-amber-500',
+                                'bg-white border-pink-200 text-pink-700 placeholder:text-pink-300 focus:border-pink-500',
+                                'bg-[#0B132B] border-[#253652] text-blue-200 placeholder:text-blue-400/50 focus:border-sky-400',
+                                'bg-white border-emerald-200 text-emerald-800 placeholder:text-emerald-400/60 focus:border-emerald-600',
+                                'bg-[#16110F] border-[#3E2F2A] text-[#D7B399] placeholder:text-[#8D6E63] focus:border-[#D7B399]',
+                                'bg-white border-slate-300 text-slate-700 placeholder:text-slate-400 focus:border-[#C62828]'
+                              )
+                        }`}
+                      />
+
                       {/* Бейдж-переключатель характера заявки (М / Д / С / —) */}
                       <button
                         type="button"
                         onClick={() => handleCyclePointType(idx)}
-                        className={`w-9 h-9 min-h-[36px] rounded-lg border font-bold text-xs flex items-center justify-center flex-shrink-0 transition-all ${
+                        className={`w-8 h-8 rounded-lg border font-bold text-xs flex items-center justify-center flex-shrink-0 transition-all ${
                           pt.type === 'М'
                             ? t(
                                 'bg-blue-500/20 border-blue-400 text-blue-300 shadow-sm',
@@ -3067,7 +3116,7 @@
                         value={pt.time || ''}
                         onChange={(e) => handleUpdatePointTime(idx, e.target.value)}
                         placeholder="00:00"
-                        className={`min-h-[36px] w-[84px] sm:w-[92px] px-2 py-1 rounded-lg font-mono font-semibold text-xs sm:text-sm text-center border transition-all focus:outline-none flex-shrink-0 ${
+                        className={`h-8 w-[74px] px-1.5 py-0.5 rounded-lg font-mono font-semibold text-xs text-center border transition-all focus:outline-none flex-shrink-0 ${
                           pt.time
                             ? t(
                                 'bg-[#FFB300]/20 border-[#FFB300]/40 text-[#FFB300] focus:border-[#FFB300]',
@@ -3096,7 +3145,7 @@
                         <button
                           type="button"
                           onClick={() => handleToggleTimeMode(idx, 'strict')}
-                          className={`w-9 h-9 min-h-[36px] rounded-lg border flex items-center justify-center transition-all ${
+                          className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-all ${
                             pt.timeMode === 'strict'
                               ? t(
                                   'bg-rose-500/20 border-rose-500 text-rose-400 shadow-sm',
@@ -3111,7 +3160,7 @@
                           }`}
                           title="Выполнить строго в указанное время"
                         >
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M9.5 16.5a7 7 0 1 1 6.7-9" />
                             <path d="M9.5 5.5V9.5L7 12" />
                             <path d="M16.5 10.5L22.5 21H10.5Z" />
@@ -3124,7 +3173,7 @@
                         <button
                           type="button"
                           onClick={() => handleToggleTimeMode(idx, 'flexible')}
-                          className={`w-9 h-9 min-h-[36px] rounded-lg border flex items-center justify-center transition-all ${
+                          className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-all ${
                             pt.timeMode === 'flexible'
                               ? t(
                                   'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-sm',
@@ -3139,7 +3188,7 @@
                           }`}
                           title="Можно выполнить в течение дня"
                         >
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <circle cx="12" cy="12" r="4.8" />
                             <path d="M12 9.5V12h2.2" />
                             <path d="M5.6 5.6A9 9 0 0 1 21 12" />
@@ -3158,12 +3207,12 @@
                       </div>
 
                       {/* Кнопки перемещения вверх / вниз / удалить */}
-                      <div className="ml-auto flex items-center gap-1.5">
+                      <div className="ml-auto flex items-center gap-1">
                         <button
                           type="button"
                           disabled={idx === 0}
                           onClick={() => handleMovePoint(idx, -1)}
-                          className={`w-11 h-11 min-h-[48px] rounded-xl border disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center text-base font-bold shadow-sm transition-colors ${t('bg-[#282B30] border-gray-700 text-gray-200 hover:bg-[#33363B]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100', 'bg-white border-pink-200 text-pink-800 hover:bg-pink-50', 'bg-[#162032] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]', 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100')}`}
+                          className={`w-8 h-8 rounded-lg border disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center text-xs font-bold shadow-sm transition-colors ${t('bg-[#282B30] border-gray-700 text-gray-200 hover:bg-[#33363B]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100', 'bg-white border-pink-200 text-pink-800 hover:bg-pink-50', 'bg-[#162032] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]', 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100')}`}
                           title="Поднять выше"
                         >
                           ▲
@@ -3173,7 +3222,7 @@
                           type="button"
                           disabled={idx === points.length - 1}
                           onClick={() => handleMovePoint(idx, 1)}
-                          className={`w-11 h-11 min-h-[48px] rounded-xl border disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center text-base font-bold shadow-sm transition-colors ${t('bg-[#282B30] border-gray-700 text-gray-200 hover:bg-[#33363B]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100', 'bg-white border-pink-200 text-pink-800 hover:bg-pink-50', 'bg-[#162032] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]', 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100')}`}
+                          className={`w-8 h-8 rounded-lg border disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center text-xs font-bold shadow-sm transition-colors ${t('bg-[#282B30] border-gray-700 text-gray-200 hover:bg-[#33363B]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100', 'bg-white border-pink-200 text-pink-800 hover:bg-pink-50', 'bg-[#162032] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]', 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100')}`}
                           title="Опустить ниже"
                         >
                           ▼
@@ -3182,7 +3231,7 @@
                         <button
                           type="button"
                           onClick={() => handleRemovePoint(idx)}
-                          className={`w-11 h-11 min-h-[48px] rounded-xl border flex items-center justify-center text-base font-bold shadow-sm transition-colors ${t(
+                          className={`w-8 h-8 rounded-lg border flex items-center justify-center text-xs font-bold shadow-sm transition-colors ${t(
                             'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
                             'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
                             'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
@@ -3211,7 +3260,7 @@
                             ? 'Введите адрес...'
                             : 'Адрес точки...'
                         }
-                        className={`w-full min-h-[48px] px-3 py-2 rounded-lg border text-[16px] sm:text-sm focus:outline-none transition-all ${
+                        className={`w-full h-9 py-1.5 px-2.5 rounded-lg border text-[16px] sm:text-sm focus:outline-none transition-all ${
                           !pt.address.trim() && (pt.type === 'М' || pt.type === 'Д')
                             ? 'border-2 border-dashed border-amber-500/80 bg-amber-500/10 placeholder:text-amber-500/80 focus:border-amber-400 text-amber-200'
                             : !pt.address.trim()

@@ -62,6 +62,45 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback } = React;
 
+    const OCR_API_URL = window.VITE_OCR_API_URL || 'https://here-timer-rice-sciences.trycloudflare.com/api/ocr-vision';
+
+    // Сжатие скриншота перед отправкой на серверный ИИ (макс. ширина 1600px, JPEG 0.87)
+    function compressImageForVision(file) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        const tempUrl = URL.createObjectURL(file);
+        img.onload = () => {
+          URL.revokeObjectURL(tempUrl);
+          const maxDim = 1600;
+          let w = img.naturalWidth || img.width;
+          let h = img.naturalHeight || img.height;
+
+          if (w > maxDim) {
+            const scale = maxDim / w;
+            w = maxDim;
+            h = Math.round(h * scale);
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(img, 0, 0, w, h);
+
+          canvas.toBlob((blob) => {
+            resolve(blob || file);
+          }, 'image/jpeg', 0.87);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(tempUrl);
+          resolve(file);
+        };
+        img.src = tempUrl;
+      });
+    }
+
     function parseAddresses(rawText) {
       const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
       const results = [];
@@ -338,6 +377,29 @@
       const [sourceMode, setSourceMode] = useState(() => {
         return localStorage.getItem('expert_route_source_mode') || 'tablet'; // 'tablet' | 'navision'
       });
+      const sourceModeRef = useRef(sourceMode);
+      useEffect(() => {
+        sourceModeRef.current = sourceMode;
+        try {
+          localStorage.setItem('expert_route_source_mode', sourceMode);
+        } catch (e) {}
+      }, [sourceMode]);
+
+      // Использование серверного ИИ для распознавания
+      const [useAiOcr, setUseAiOcr] = useState(() => {
+        const saved = localStorage.getItem('expert_route_use_ai');
+        return saved === null ? true : saved === 'true';
+      });
+      const useAiOcrRef = useRef(useAiOcr);
+      useEffect(() => {
+        useAiOcrRef.current = useAiOcr;
+        try {
+          localStorage.setItem('expert_route_use_ai', String(useAiOcr));
+        } catch (e) {}
+      }, [useAiOcr]);
+
+      // Фактически использованный движок распознавания (null | 'ai' | 'local')
+      const [ocrEngineUsed, setOcrEngineUsed] = useState(null);
 
       const [ocrError, setOcrError] = useState('');
       const [rawOcrText, setRawOcrText] = useState('');
@@ -346,13 +408,6 @@
       const [isDragging, setIsDragging] = useState(false);
 
       const fileInputRef = useRef(null);
-
-      // Автосохранение режима источника
-      useEffect(() => {
-        try {
-          localStorage.setItem('expert_route_source_mode', sourceMode);
-        } catch (e) {}
-      }, [sourceMode]);
 
       // Предобработка скриншота на canvas под выбранный режим источника
       const preprocessImageOnCanvas = (file, mode = 'tablet') => {
@@ -582,8 +637,55 @@
         try {
           for (let idx = 0; idx < imageFiles.length; idx++) {
             const file = imageFiles[idx];
-            setOcrStatusText(`Обработка фото ${idx + 1} (${sourceMode === 'tablet' ? 'Планшет' : 'Navision'})...`);
-            const filteredBlob = await preprocessImageOnCanvas(file, sourceMode);
+            let photoProcessedWithAi = false;
+            const currentMode = sourceModeRef.current || 'tablet';
+            const shouldTryAi = useAiOcrRef.current && (typeof navigator === 'undefined' || navigator.onLine !== false);
+
+            // ЭТАП 1: Попытка распознавания через серверный ИИ
+            if (shouldTryAi) {
+              setOcrStatusText(`Распознавание ИИ (фото ${idx + 1} из ${imageFiles.length})...`);
+              try {
+                const compressedBlob = await compressImageForVision(file);
+                const formData = new FormData();
+                formData.append('image', compressedBlob, file.name ? file.name.replace(/\.[^.]+$/, '.jpg') : 'screenshot.jpg');
+
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 14000);
+
+                const response = await fetch(OCR_API_URL, {
+                  method: 'POST',
+                  body: formData,
+                  signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (response.ok) {
+                  const data = await response.json();
+                  if (data && Array.isArray(data.items) && data.items.length > 0) {
+                    let aiPhotoText = `--- Фото ${idx + 1} (ИИ) ---\n`;
+                    for (const item of data.items) {
+                      const addr = (item.address || '').trim();
+                      const tVal = (item.time || '').trim();
+                      if (addr) {
+                        allNewPoints.push({ address: addr, time: tVal });
+                        aiPhotoText += (tVal ? `[${tVal}] ` : '') + addr + '\n';
+                      }
+                    }
+                    combinedText += aiPhotoText + '\n';
+                    setOcrEngineUsed('ai');
+                    photoProcessedWithAi = true;
+                  }
+                }
+              } catch (aiErr) {
+                console.warn(`ИИ-распознавание для фото ${idx + 1} не удалось, переключение на локальный OCR:`, aiErr);
+              }
+            }
+
+            // ЭТАП 2: Резервный метод (Fallback на локальный Tesseract.js)
+            if (!photoProcessedWithAi) {
+              setOcrEngineUsed(prev => prev === 'ai' ? 'ai' : 'local');
+              setOcrStatusText(`Обработка фото ${idx + 1} (${currentMode === 'tablet' ? 'Планшет' : 'Navision'})...`);
+              const filteredBlob = await preprocessImageOnCanvas(file, currentMode);
 
             setOcrStatusText(`Распознавание адресов (фото ${idx + 1} из ${imageFiles.length})...`);
             const imageUrl = URL.createObjectURL(filteredBlob);
@@ -607,10 +709,10 @@
             }
 
             const recognizedText = ocrResult?.data?.text || '';
-            const photoBlock = `--- Фото ${idx + 1} ---\n` + recognizedText + '\n';
+            const photoBlock = `--- Фото ${idx + 1} (Локальный OCR) ---\n` + recognizedText + '\n';
             combinedText += photoBlock;
 
-            if (sourceMode === 'tablet') {
+            if (currentMode === 'tablet') {
               // РЕЖИМ ПЛАНШЕТ: парсим адреса с Y-координатами и запускаем Проход 2 (распознавание времени)
               const addrItems = [];
               const lines = ocrResult?.data?.lines || [];
@@ -715,6 +817,7 @@
               }
             }
           }
+        }
 
           setRawOcrText(combinedText);
 
@@ -833,6 +936,7 @@
           setRawOcrText('');
           setOcrError('');
           setShowRawText(false);
+          setOcrEngineUsed(null);
           localStorage.removeItem('expert_route_points');
         }
       };
@@ -1146,6 +1250,49 @@
                 </button>
               </div>
 
+              {/* Переключатель распознавания через ИИ */}
+              <button
+                type="button"
+                onClick={() => setUseAiOcr(prev => !prev)}
+                className={`w-full min-h-[44px] sm:min-h-[46px] px-3.5 py-2.5 rounded-xl text-sm font-semibold flex items-center justify-between border transition-all mb-3 ${
+                  useAiOcr
+                    ? t(
+                        'bg-[#FFB300]/15 border-[#FFB300]/50 text-[#FFB300]',
+                        'bg-amber-50 border-amber-300 text-amber-900',
+                        'bg-pink-50 border-pink-300 text-pink-700',
+                        'bg-[#131D31] border-sky-500/50 text-sky-300',
+                        'bg-emerald-50 border-emerald-300 text-emerald-800',
+                        'bg-[#221A17] border-[#D7B399]/40 text-[#D7B399]',
+                        'bg-[#FCE8E8] border-[#C62828]/40 text-[#9A1B24]'
+                      )
+                    : t(
+                        'bg-[#1E2125] border-gray-700 text-gray-400 hover:text-gray-200',
+                        'bg-slate-50 border-slate-200 text-slate-500 hover:text-slate-700',
+                        'bg-pink-50/50 border-pink-200 text-pink-400 hover:text-pink-600',
+                        'bg-[#0B132B] border-[#253652] text-blue-300/50 hover:text-blue-200',
+                        'bg-emerald-50/50 border-emerald-200 text-emerald-600/70 hover:text-emerald-800',
+                        'bg-[#16110F] border-[#3E2F2A] text-[#8D6E63] hover:text-[#D7B399]',
+                        'bg-slate-50 border-slate-200 text-slate-500 hover:text-slate-700'
+                      )
+                }`}
+                title={useAiOcr ? 'ИИ включен (авто-fallback на локальный OCR при отсутствии сети)' : 'ИИ выключен (используется только локальный Tesseract.js)'}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">✨</span>
+                  <span>Распознавание ИИ</span>
+                  <span className="text-xs opacity-70 font-normal hidden sm:inline">(сервер + авто-fallback)</span>
+                </div>
+                <div className={`w-10 h-6 flex items-center rounded-full p-1 transition-colors ${
+                  useAiOcr
+                    ? t('bg-[#FFB300]', 'bg-amber-500', 'bg-pink-500', 'bg-sky-500', 'bg-emerald-600', 'bg-[#8D6E63]', 'bg-[#C62828]')
+                    : 'bg-gray-600'
+                }`}>
+                  <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                    useAiOcr ? 'translate-x-4' : 'translate-x-0'
+                  }`} />
+                </div>
+              </button>
+
               {/* Drag and Drop область */}
               <div
                 onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -1262,9 +1409,36 @@
             {/* 3. Маршрутный лист (Список точек) */}
             <section className={`rounded-2xl shadow-sm border p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
               <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                <h2 className={`text-sm font-bold uppercase tracking-wider ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
-                  <span>Точки маршрута ({points.length})</span>
-                </h2>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className={`text-sm font-bold uppercase tracking-wider ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
+                    <span>Точки маршрута ({points.length})</span>
+                  </h2>
+                  {ocrEngineUsed && (
+                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border transition-colors ${
+                      ocrEngineUsed === 'ai'
+                        ? t(
+                            'bg-[#FFB300]/20 border-[#FFB300]/40 text-[#FFB300]',
+                            'bg-amber-100 border-amber-300 text-amber-800',
+                            'bg-pink-100 border-pink-300 text-pink-700',
+                            'bg-sky-500/20 border-sky-400/40 text-sky-300',
+                            'bg-emerald-100 border-emerald-300 text-emerald-800',
+                            'bg-[#382B26] border-[#D7B399]/40 text-[#D7B399]',
+                            'bg-[#FCE8E8] border-[#C62828]/40 text-[#9A1B24]'
+                          )
+                        : t(
+                            'bg-[#1E2125] border-gray-700 text-gray-400',
+                            'bg-slate-100 border-slate-300 text-slate-600',
+                            'bg-pink-50 border-pink-200 text-pink-600',
+                            'bg-[#0B132B] border-[#253652] text-blue-300',
+                            'bg-emerald-50 border-emerald-200 text-emerald-700',
+                            'bg-[#16110F] border-[#3E2F2A] text-[#A1887F]',
+                            'bg-slate-100 border-slate-300 text-slate-600'
+                          )
+                    }`}>
+                      {ocrEngineUsed === 'ai' ? '✨ ИИ' : '⚙️ Локальный OCR'}
+                    </span>
+                  )}
+                </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
                   <button

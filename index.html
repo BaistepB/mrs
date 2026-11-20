@@ -666,9 +666,14 @@
                     for (const item of data.items) {
                       const addr = (item.address || '').trim();
                       const tVal = (item.time || '').trim();
+                      const typeVal = (item.type || '').trim();
                       if (addr) {
-                        allNewPoints.push({ address: addr, time: tVal });
-                        aiPhotoText += (tVal ? `[${tVal}] ` : '') + addr + '\n';
+                        allNewPoints.push({ address: addr, time: tVal, type: typeVal });
+                        aiPhotoText += (typeVal ? `[${typeVal}] ` : '') + (tVal ? `[${tVal}] ` : '') + addr + '\n';
+                      } else if (typeVal === 'М' || typeVal === 'Д') {
+                        // Монтажная заявка без адреса (колонка пустая)
+                        allNewPoints.push({ address: '', time: tVal, type: typeVal });
+                        aiPhotoText += `[${typeVal}] ` + (tVal ? `[${tVal}] ` : '') + 'Монтаж без адреса\n';
                       }
                     }
                     combinedText += aiPhotoText + '\n';
@@ -824,14 +829,27 @@
           if (allNewPoints.length > 0) {
             const normalize = s => s.toLowerCase().replace(/[^а-яёa-z0-9]/g, '');
             setPoints(prev => {
-              const seenKeys = new Set(prev.map(p => normalize(p.address)));
+              const seenKeys = new Set(prev.map(p => normalize(p.address)).filter(Boolean));
               const uniqueNewPoints = [];
               for (const item of allNewPoints) {
+                // Монтажные заявки без адреса добавляем каждую отдельно без объединения
+                if (!item.address && (item.type === 'М' || item.type === 'Д')) {
+                  uniqueNewPoints.push({
+                    id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+                    type: item.type,
+                    address: '',
+                    time: item.time || '',
+                    timeMode: null
+                  });
+                  continue;
+                }
+
                 const key = normalize(item.address);
                 if (key && !seenKeys.has(key)) {
                   seenKeys.add(key);
                   uniqueNewPoints.push({
                     id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+                    type: item.type || '',
                     address: item.address,
                     time: item.time || '',
                     timeMode: null
@@ -993,11 +1011,28 @@
         });
       };
 
+      // Циклическое переключение характера заявки ('' -> 'М' -> 'Д' -> 'С' -> '')
+      const handleCyclePointType = (index) => {
+        const types = ['', 'М', 'Д', 'С'];
+        setPoints(prev => {
+          const updated = [...prev];
+          if (!updated[index]) return prev;
+          const currentType = updated[index].type || '';
+          const nextIdx = (types.indexOf(currentType) + 1) % types.length;
+          updated[index] = {
+            ...updated[index],
+            type: types[nextIdx]
+          };
+          return updated;
+        });
+      };
+
       const handleAddManualPoint = () => {
         setPoints(prev => [
           ...prev,
           {
             id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+            type: '',
             address: '',
             time: '',
             timeMode: null
@@ -1049,8 +1084,26 @@
         }
 
         const rtextValue = segments.join('~');
-        const url = `https://yandex.ru/maps/?rtext=${rtextValue}&rtt=auto`;
-        window.open(url, '_blank');
+        const routeQuery = `rtext=${rtextValue}&rtt=auto`;
+        const webUrl = `https://yandex.ru/maps/?${routeQuery}`;
+        const yandexMapsAppUrl = `yandexmaps://maps.yandex.ru/?${routeQuery}`;
+
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+        if (isIOS) {
+          // На iOS открываем напрямую приложение Яндекс Карт, чтобы Яндекс Навигатор не перехватывал ссылку
+          window.location.href = yandexMapsAppUrl;
+
+          // Резервный переход на веб-версию, если приложение Яндекс Карт не установлено
+          setTimeout(() => {
+            if (!document.hidden) {
+              window.location.href = webUrl;
+            }
+          }, 1500);
+        } else {
+          // Для десктопа и Android сохраняем открытие в новой вкладке
+          window.open(webUrl, '_blank');
+        }
       };
 
       // Форматирование даты и времени для шапки
@@ -1490,6 +1543,56 @@
                         {idx + 1}
                       </div>
 
+                      {/* Бейдж-переключатель характера заявки (М / Д / С / —) */}
+                      <button
+                        type="button"
+                        onClick={() => handleCyclePointType(idx)}
+                        className={`w-9 h-9 min-h-[36px] rounded-lg border font-bold text-xs flex items-center justify-center flex-shrink-0 transition-all ${
+                          pt.type === 'М'
+                            ? t(
+                                'bg-blue-500/20 border-blue-400 text-blue-300 shadow-sm',
+                                'bg-blue-500/15 border-blue-500 text-blue-600 shadow-sm',
+                                'bg-blue-500/15 border-blue-500 text-blue-600 shadow-sm',
+                                'bg-blue-500/20 border-blue-400 text-blue-300 shadow-sm',
+                                'bg-blue-500/15 border-blue-500 text-blue-600 shadow-sm',
+                                'bg-blue-500/20 border-blue-400 text-blue-300 shadow-sm',
+                                'bg-blue-500/15 border-blue-500 text-blue-600 shadow-sm'
+                              )
+                            : pt.type === 'Д'
+                            ? t(
+                                'bg-amber-500/20 border-amber-400 text-amber-300 shadow-sm',
+                                'bg-amber-500/15 border-amber-500 text-amber-700 shadow-sm',
+                                'bg-amber-500/15 border-amber-500 text-amber-700 shadow-sm',
+                                'bg-amber-500/20 border-amber-400 text-amber-300 shadow-sm',
+                                'bg-amber-500/15 border-amber-500 text-amber-700 shadow-sm',
+                                'bg-amber-500/20 border-amber-400 text-amber-300 shadow-sm',
+                                'bg-amber-500/15 border-amber-500 text-amber-700 shadow-sm'
+                              )
+                            : pt.type === 'С'
+                            ? t(
+                                'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-sm',
+                                'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm',
+                                'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm',
+                                'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-sm',
+                                'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm',
+                                'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-sm',
+                                'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm'
+                              )
+                            : t(
+                                'border-gray-700 bg-[#282B30] text-gray-500 hover:text-gray-300',
+                                'border-slate-200 bg-white text-slate-400 hover:text-slate-600',
+                                'border-pink-200 bg-white text-pink-300 hover:text-pink-600',
+                                'border-[#253652] bg-[#162032] text-blue-300/40 hover:text-blue-200',
+                                'border-emerald-200 bg-white text-emerald-300 hover:text-emerald-700',
+                                'border-[#3E2F2A] bg-[#241C19] text-[#A1887F] hover:text-[#D7B399]',
+                                'border-slate-200 bg-white text-slate-400 hover:text-slate-600'
+                              )
+                        }`}
+                        title="Характер заявки: М (Монтаж), Д (Демонтаж/доп.), С (Сервис). Нажмите для изменения"
+                      >
+                        {pt.type || '—'}
+                      </button>
+
                       {/* Редактируемый бейдж времени визита */}
                       <input
                         type="text"
@@ -1635,8 +1738,20 @@
                         type="text"
                         value={pt.address}
                         onChange={(e) => handleUpdatePointAddress(idx, e.target.value)}
-                        placeholder="Адрес точки..."
-                        className={`w-full min-h-[48px] px-3 py-2 rounded-lg border text-[16px] sm:text-sm focus:outline-none transition-shadow ${t('bg-[#282B30] border-gray-700 text-white focus:border-[#FFB300]', 'bg-white border-slate-300 text-slate-900 focus:border-amber-500', 'bg-white border-pink-200 text-pink-950 focus:border-pink-500', 'bg-[#162032] border-[#253652] text-blue-50 focus:border-sky-400', 'bg-white border-emerald-200 text-emerald-950 focus:border-emerald-600', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] focus:border-[#D7B399]', 'bg-white border-slate-300 text-slate-900 focus:border-[#C62828]')}`}
+                        placeholder={
+                          !pt.address.trim() && (pt.type === 'М' || pt.type === 'Д')
+                            ? 'Монтаж без адреса — введите адрес вручную...'
+                            : !pt.address.trim()
+                            ? 'Введите адрес...'
+                            : 'Адрес точки...'
+                        }
+                        className={`w-full min-h-[48px] px-3 py-2 rounded-lg border text-[16px] sm:text-sm focus:outline-none transition-all ${
+                          !pt.address.trim() && (pt.type === 'М' || pt.type === 'Д')
+                            ? 'border-2 border-dashed border-amber-500/80 bg-amber-500/10 placeholder:text-amber-500/80 focus:border-amber-400 text-amber-200'
+                            : !pt.address.trim()
+                            ? 'border-2 border-dashed border-gray-500/50 placeholder:text-gray-400 focus:border-[#FFB300]'
+                            : t('bg-[#282B30] border-gray-700 text-white focus:border-[#FFB300]', 'bg-white border-slate-300 text-slate-900 focus:border-amber-500', 'bg-white border-pink-200 text-pink-950 focus:border-pink-500', 'bg-[#162032] border-[#253652] text-blue-50 focus:border-sky-400', 'bg-white border-emerald-200 text-emerald-950 focus:border-emerald-600', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] focus:border-[#D7B399]', 'bg-white border-slate-300 text-slate-900 focus:border-[#C62828]')
+                        }`}
                       />
                     </div>
                   </div>

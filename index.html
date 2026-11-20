@@ -1,0 +1,1625 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Маршрут</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React 18 & ReactDOM -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel Standalone -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@0.344.0/dist/umd/lucide.min.js"></script>
+  
+  <!-- Tesseract.js v5.1.0 -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+
+  <style>
+    /* Плавные анимации и предотвращение дергания скролла */
+    body {
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+    input, select, textarea {
+      font-size: 16px !important;
+    }
+    @media (min-width: 640px) {
+      input, select, textarea {
+        font-size: 0.875rem !important;
+      }
+    }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+
+    @keyframes snowfall {
+      0% { transform: translateY(-10vh) translateX(0) rotate(0deg); opacity: 0.9; }
+      50% { transform: translateY(50vh) translateX(15px) rotate(180deg); opacity: 0.6; }
+      100% { transform: translateY(105vh) translateX(-15px) rotate(360deg); opacity: 0.1; }
+    }
+    .snowflake {
+      position: fixed;
+      top: -5vh;
+      color: #ffffff;
+      pointer-events: none;
+      z-index: 45;
+      user-select: none;
+      animation: snowfall linear infinite;
+    }
+  </style>
+</head>
+<body class="antialiased min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    function parseAddresses(rawText) {
+      const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
+      const results = [];
+
+      for (let line of lines) {
+        // 1. Расширенная проверка признаков адреса (города, округа, районы, деревни, КП, СНТ, шоссе)
+        const hasAddressKeyword = /(г\.?\s*о\.?|ГО\s|р-н|район|обл\.?|область|МО,|г[.\s]|Москва|ул[.\s]|пр-кт|проспект|переулок|пер[.\s]|ш[.\s]|шоссе|бульвар|б-р|мкр[.\s]|дер[.\s]|деревня|пос[.\s]|с\.о\.|садов\.|СНТ|КП\s|уч[.\s])/i.test(line);
+        if (!hasAddressKeyword) continue;
+
+        // 2. Убираем ведущий мусор до первой кириллической буквы
+        let cleaned = line.replace(/^[^А-ЯЁа-яё]+/, '');
+
+        // 3. Восстанавливаем ! → 1 после "корп"
+        cleaned = cleaned.replace(/(корп\.?)\s*!(?=[\s,]|$)/gi, '$1 1');
+
+        // 4. Убираем телефоны (+7( или +7- или 8()
+        cleaned = cleaned.replace(/,\s*[+]?[78][(-]\d[\d\s\-()]{7,}.*$/g, '');
+
+        // 5. Убираем квартиру/помещение в конце (без \b, так как \b в JS не работает с кириллицей)
+        cleaned = cleaned.replace(/,?\s*(?:^|[,\s])(кв|квартира|помещ|пом)\.?\s*\d[\dа-яёА-ЯЁ\/-]*.*$/gi, '');
+
+        // 6. Убираем многоточие в конце обрезанных длинных адресов и чистим пробелы/запятые
+        cleaned = cleaned
+          .replace(/\.{2,}\s*$/, '')
+          .replace(/\s*,\s*/g, ', ')
+          .replace(/,+/g, ',')
+          .replace(/^[,\s]+|[,\s]+$/g, '')
+          .replace(/\s{2,}/g, ' ');
+
+        // 7. Пропускаем адрес, если в нем есть цифра ИЛИ это длинный обрезанный адрес (от 25 символов)
+        if (cleaned.length > 12 && (/\d/.test(cleaned) || cleaned.length > 25)) {
+          results.push(cleaned);
+        }
+      }
+
+      return results;
+    }
+
+    // Парсер строк Navision для извлечения адреса и времени визита
+    function parseNavisionText(rawText) {
+      if (!rawText) return [];
+      const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
+      const results = [];
+
+      for (let line of lines) {
+        // 1. Извлечение времени визита
+        let time = '';
+        const timeMatch = line.match(/\b([01]?\d|2[0-3])[:;]([0-5]\d)(?::[0-5]\d)?\b/);
+        if (timeMatch) {
+          const hours = timeMatch[1].padStart(2, '0');
+          const minutes = timeMatch[2];
+          time = `${hours}:${minutes}`;
+        }
+
+        // 2. Очистка даты и времени справа
+        let cleanedLine = line
+          .replace(/\s+\d{1,2}\.\d{2}\.\d{2,4}.*$/g, '')
+          .replace(/\s+\d{1,2}[:;]\d{2}(?::\d{2})?\s*$/g, '');
+
+        // 3. Очистка ЗАКАЗ и номера заказа слева, а также срезанных цифр предыдущей колонки
+        cleanedLine = cleanedLine
+          .replace(/^[^А-ЯЁа-яёA-Za-z0-9]*ЗАКАЗ(?:[\s|.,]+|$)/i, '')
+          .replace(/^(?:[A-Za-z0-9._-]+|\S*\d\S*)\s+(?=[А-ЯЁа-яё])/i, '')
+          .trim();
+
+        // 4. Прогон очищенной строки через parseAddresses
+        const parsed = parseAddresses(cleanedLine);
+        if (parsed && parsed.length > 0) {
+          results.push({ address: parsed[0], time: time || '' });
+        }
+      }
+
+      return results;
+    }
+
+    // Маска ручного ввода времени (1234 -> 12:34)
+    function formatTimeInput(rawValue) {
+      let digits = (rawValue || '').replace(/\D/g, '').slice(0, 4);
+      if (digits.length >= 2) {
+        const hours = parseInt(digits.slice(0, 2), 10);
+        if (hours > 23) {
+          digits = '23' + digits.slice(2);
+        }
+      }
+      if (digits.length >= 3) {
+        const firstMinDigit = parseInt(digits[2], 10);
+        if (firstMinDigit > 5) {
+          digits = digits.slice(0, 2) + '5' + digits.slice(3);
+        }
+      }
+      if (digits.length > 2) {
+        return digits.slice(0, 2) + ':' + digits.slice(2);
+      }
+      return digits;
+    }
+
+    // Вспомогательный расчет времени в минутах для сортировки
+    function getTimeInMinutes(timeStr) {
+      if (!timeStr) return Infinity;
+      const match = String(timeStr).match(/(\d{1,2})[:.](\d{2})/);
+      if (!match) return Infinity;
+      const hours = parseInt(match[1], 10);
+      const minutes = parseInt(match[2], 10);
+      return hours * 60 + minutes;
+    }
+
+    // Сортировка массива точек по возрастанию времени (точки без времени внизу)
+    function sortPointsByTime(list) {
+      if (!Array.isArray(list)) return [];
+      return [...list].sort((a, b) => getTimeInMinutes(a.time) - getTimeInMinutes(b.time));
+    }
+
+    // Главное приложение
+    const App = () => {
+      // Состояние темы оформления и модального окна настроек
+      const [theme, setTheme] = useState(() => {
+        try {
+          return localStorage.getItem('expert_route_theme') || 'expert';
+        } catch (e) {
+          return 'expert';
+        }
+      });
+      const [showSettings, setShowSettings] = useState(false);
+
+      // Автосохранение выбранной темы
+      useEffect(() => {
+        try {
+          localStorage.setItem('expert_route_theme', theme);
+        } catch (e) {}
+      }, [theme]);
+
+      // Хелпер-функция тем оформления
+      const t = (dark, light, pink, marine, mint, coffee, expert) => {
+        if (theme === 'newyear') {
+          return (dark || light)
+            .replace(/bg-\[#101112\]/g, 'bg-[#0A1912]')
+            .replace(/bg-\[#282B30\]/g, 'bg-[#11261D]')
+            .replace(/bg-\[#1E2125\]/g, 'bg-[#0D1F17]')
+            .replace(/hover:bg-\[#33363B\]/g, 'hover:bg-[#19382B]')
+            .replace(/border-\[#3A3D42\]/g, 'border-[#1E3F30]')
+            .replace(/border-gray-800/g, 'border-[#1A382A]')
+            .replace(/border-gray-700/g, 'border-[#234736]')
+            .replace(/border-\[#444\]/g, 'border-[#234736]')
+            .replace(/bg-\[#FFB300\] text-black/g, 'bg-gradient-to-r from-[#B71C1C] to-[#D32F2F] text-white border border-[#FBBF24]/40')
+            .replace(/hover:bg-\[#FFA000\]/g, 'hover:from-[#9A1B24] hover:to-[#B71C1C]')
+            .replace(/bg-\[#FFB300\]\/20/g, 'bg-[#FBBF24]/20')
+            .replace(/bg-\[#FFB300\]\/15/g, 'bg-[#FBBF24]/15')
+            .replace(/bg-\[#FFB300\]/g, 'bg-[#C62828] text-white')
+            .replace(/text-\[#FFB300\]/g, 'text-[#FBBF24]')
+            .replace(/border-\[#FFB300\]\/50/g, 'border-[#FBBF24]/50')
+            .replace(/border-\[#FFB300\]/g, 'border-[#FBBF24]')
+            .replace(/focus:ring-\[#FFB300\]/g, 'focus:ring-[#FBBF24]')
+            .replace(/shadow-\[#FFB300\]\/\d+/g, 'shadow-[#C62828]/40');
+        }
+        if (theme === 'expert') {
+          if (expert) return expert;
+          return (light || dark)
+            .replace(/bg-gray-100/g, 'bg-[#F4F5F7]')
+            .replace(/bg-amber-(400|500|600|700|800|900|950)/g, 'bg-[#C62828]')
+            .replace(/bg-\[#FFB300\]\/15/g, 'bg-[#FCE8E8]')
+            .replace(/bg-\[#FFB300\]/g, 'bg-[#C62828]')
+            .replace(/hover:bg-amber-(500|600|700|800|900|950)/g, 'hover:bg-[#B71C1C]')
+            .replace(/text-amber-\d+\/(40|50|60|70)/g, 'text-gray-500')
+            .replace(/text-amber-(400|500|600|700|800|900|950)/g, 'text-[#9A1B24]')
+            .replace(/text-\[#FFB300\]/g, 'text-[#9A1B24]')
+            .replace(/border-amber-(500|600|700|800|900|950)/g, 'border-[#C62828]')
+            .replace(/border-\[#FFB300\](\/50)?/g, 'border-[#C62828]')
+            .replace(/focus:ring-amber-\d+/g, 'focus:ring-[#C62828]')
+            .replace(/focus:border-amber-\d+/g, 'focus:border-[#C62828]')
+            .replace(/shadow-amber-\d+\/\d+/g, 'shadow-[#C62828]/30');
+        }
+        if (theme === 'expert-dark') {
+          if (dark && dark.includes('bg-[#FFB300]/15')) return dark;
+          return (dark || light)
+            .replace(/bg-\[#FFB300\] text-black/g, 'bg-[#C62828] text-white')
+            .replace(/bg-\[#FFB300\]\/20/g, 'bg-[#C62828]/25')
+            .replace(/bg-\[#FFB300\]/g, 'bg-[#C62828]')
+            .replace(/hover:bg-\[#FFA000\]/g, 'hover:bg-[#B71C1C]')
+            .replace(/text-\[#FFB300\]/g, 'text-[#FF5252]')
+            .replace(/border-\[#FFB300\]\/50/g, 'border-[#EF4444]/50')
+            .replace(/border-\[#FFB300\]\/30/g, 'border-[#EF4444]/30')
+            .replace(/border-\[#FFB300\]/g, 'border-[#C62828]')
+            .replace(/focus:ring-\[#FFB300\]/g, 'focus:ring-[#EF4444]')
+            .replace(/shadow-\[#FFB300\]\/\d+/g, 'shadow-[#C62828]/30');
+        }
+        if (theme === 'marine') {
+          return (marine || dark)
+            .replace(/bg-blue-50\/50/g, 'bg-[#131D31]')
+            .replace(/bg-blue-50/g, 'bg-[#0B132B]')
+            .replace(/bg-blue-100/g, 'bg-[#162238]')
+            .replace(/bg-blue-200/g, 'bg-[#1E3A5F]')
+            .replace(/bg-white/g, 'bg-[#162032] text-blue-50')
+            .replace(/text-blue-950/g, 'text-blue-50')
+            .replace(/text-blue-900\/60/g, 'text-blue-300/50')
+            .replace(/text-blue-900/g, 'text-blue-100')
+            .replace(/text-blue-800/g, 'text-blue-200')
+            .replace(/text-blue-700/g, 'text-sky-400')
+            .replace(/text-blue-600/g, 'text-sky-400')
+            .replace(/border-blue-200/g, 'border-[#253652]')
+            .replace(/border-blue-300/g, 'border-sky-500/50');
+        }
+        if (theme === 'coffee') {
+          return (coffee || dark)
+            .replace(/bg-\[#F5F2EE\]/g, 'bg-[#16110F]')
+            .replace(/bg-\[#EFEBE9\]/g, 'bg-[#221A17]')
+            .replace(/bg-\[#FDFBF7\]/g, 'bg-[#241C19] text-[#F5EBE6]')
+            .replace(/bg-\[#D7CCC8\]\/60/g, 'bg-[#362924]')
+            .replace(/bg-\[#D7CCC8\]\/40/g, 'bg-[#362924]')
+            .replace(/bg-\[#D7CCC8\]/g, 'bg-[#382B26]')
+            .replace(/bg-white/g, 'bg-[#241C19] text-[#F5EBE6]')
+            .replace(/text-\[#3E2723\]/g, 'text-[#F5EBE6]')
+            .replace(/text-\[#4E342E\]/g, 'text-[#E6D5CC]')
+            .replace(/text-\[#5D4037\]/g, 'text-[#D7B399]')
+            .replace(/text-\[#6D4C41\]\/60/g, 'text-[#A1887F]/60')
+            .replace(/text-\[#6D4C41\]/g, 'text-[#E0B084]')
+            .replace(/text-\[#8D6E63\]/g, 'text-[#D7B399]')
+            .replace(/border-\[#D7CCC8\]/g, 'border-[#3E2F2A]')
+            .replace(/border-\[#A1887F\]/g, 'border-[#6D4C41]');
+        }
+        if (theme === 'mint') return mint;
+        if (theme === 'pink') return pink;
+        if (theme === 'light') return light;
+        return dark;
+      };
+
+      // Синхронизация цвета фона и текста документа
+      useEffect(() => {
+        document.body.style.backgroundColor = theme === 'newyear' ? '#0A1912' : theme === 'expert-dark' ? '#101112' : t('#101112', '#F0F2F5', '#fdf2f8', '#0B132B', '#f0fdf4', '#16110F', '#F4F5F7');
+        document.body.style.color = (theme === 'newyear' || theme === 'expert-dark') ? '#F3F4F6' : t('#F3F4F6', '#111827', '#831843', '#F0F9FF', '#14532d', '#F5EBE6', '#111827');
+      }, [theme]);
+
+      // Состояние времени
+      const [now, setNow] = useState(new Date());
+
+      // Всплывающая подсказка для кнопок статуса времени
+      const [toastTooltip, setToastTooltip] = useState({ id: null, text: '' });
+      const tooltipTimerRef = useRef(null);
+
+      const showPointTooltip = (pointId, text) => {
+        if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current);
+        setToastTooltip({ id: pointId, text });
+        tooltipTimerRef.current = setTimeout(() => {
+          setToastTooltip({ id: null, text: '' });
+        }, 2000);
+      };
+
+      // Состояния точек и настроек (с автозагрузкой из localStorage)
+      const [points, setPoints] = useState(() => {
+        try {
+          const saved = localStorage.getItem('expert_route_points');
+          return saved ? JSON.parse(saved) : [];
+        } catch (e) {
+          return [];
+        }
+      });
+
+      const [startType, setStartType] = useState(() => {
+        return localStorage.getItem('expert_route_start_type') || 'current'; // 'current' | 'custom'
+      });
+
+      const [customStart, setCustomStart] = useState(() => {
+        return localStorage.getItem('expert_route_custom_start') || '';
+      });
+
+      const [returnToStart, setReturnToStart] = useState(() => {
+        return localStorage.getItem('expert_route_return') === 'true';
+      });
+
+      // Состояния скриншотов и OCR
+      const [images, setImages] = useState([]);
+      const [ocrLoading, setOcrLoading] = useState(false);
+      const [ocrProgress, setOcrProgress] = useState(0);
+      const [ocrStatusText, setOcrStatusText] = useState('');
+      const [sourceMode, setSourceMode] = useState(() => {
+        return localStorage.getItem('expert_route_source_mode') || 'tablet'; // 'tablet' | 'navision'
+      });
+
+      const [ocrError, setOcrError] = useState('');
+      const [rawOcrText, setRawOcrText] = useState('');
+      const [showRawText, setShowRawText] = useState(true);
+      const [copiedRawText, setCopiedRawText] = useState(false);
+      const [isDragging, setIsDragging] = useState(false);
+
+      const fileInputRef = useRef(null);
+
+      // Автосохранение режима источника
+      useEffect(() => {
+        try {
+          localStorage.setItem('expert_route_source_mode', sourceMode);
+        } catch (e) {}
+      }, [sourceMode]);
+
+      // Предобработка скриншота на canvas под выбранный режим источника
+      const preprocessImageOnCanvas = (file, mode = 'tablet') => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          const tempUrl = URL.createObjectURL(file);
+          img.onload = () => {
+            URL.revokeObjectURL(tempUrl);
+            const canvas = document.createElement('canvas');
+            const padding = 20;
+
+            if (mode === 'tablet') {
+              // РЕЖИМ «ПЛАНШЕТ (ЗАЯВКИ)»: обрезка краев + удаление красного + контраст серого
+              const nw = img.naturalWidth;
+              const nh = img.naturalHeight;
+
+              // Обрезка по краям: левые 21%, правые 22%, верхние 15%
+              const cropLeft = Math.floor(nw * 0.21);
+              const cropRight = Math.floor(nw * 0.22);
+              const cropW = Math.max(10, nw - cropLeft - cropRight);
+
+              const cropTop = Math.floor(nh * 0.15);
+              const cropH = Math.max(10, nh - cropTop);
+
+              const scale = 3.0;
+              const imgW = Math.round(cropW * scale);
+              const imgH = Math.round(cropH * scale);
+              const w = imgW + padding * 2;
+              const h = imgH + padding * 2;
+
+              canvas.width = w;
+              canvas.height = h;
+
+              const ctx = canvas.getContext('2d');
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, w, h);
+
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
+              ctx.drawImage(img, cropLeft, cropTop, cropW, cropH, padding, padding, imgW, imgH);
+
+              try {
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const data = imgData.data;
+
+                for (let i = 0; i < data.length; i += 4) {
+                  const r = data[i];
+                  const g = data[i + 1];
+                  const b = data[i + 2];
+
+                  // 1. Все красно-коричневые пиксели (красная строка заявки) закрашиваем в чистый белый
+                  if ((r - Math.max(g, b) > 20) && r > 80) {
+                    data[i] = data[i + 1] = data[i + 2] = 255;
+                  } else {
+                    // 2. Градации серого с мягким повышением контраста (без черных клякс)
+                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                    const c = gray > 215 ? 255 : Math.max(0, Math.round((gray - 60) * 1.4));
+                    data[i] = data[i + 1] = data[i + 2] = c;
+                  }
+                }
+
+                ctx.putImageData(imgData, 0, 0);
+              } catch (err) {
+                console.warn('Ошибка обработки canvas tablet:', err);
+              }
+            } else {
+              // РЕЖИМ «NAVISION (СИНИЙ ТЕКСТ)»: без обрезки краев, увеличение в 3 раза, фильтрация синего текста
+              const scale = 3.0;
+              const imgW = Math.round(img.naturalWidth * scale);
+              const imgH = Math.round(img.naturalHeight * scale);
+              const w = imgW + padding * 2;
+              const h = imgH + padding * 2;
+
+              canvas.width = w;
+              canvas.height = h;
+
+              const ctx = canvas.getContext('2d');
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, w, h);
+
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
+              ctx.drawImage(img, padding, padding, imgW, imgH);
+
+              try {
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const data = imgData.data;
+
+                for (let i = 0; i < data.length; i += 4) {
+                  const r = data[i];
+                  const g = data[i + 1];
+                  const b = data[i + 2];
+
+                  const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                  const minCh = Math.min(r, g, b);
+
+                  // Стираем белый фон и бледно-серые линии сетки таблицы
+                  if (gray > 205 && minCh > 195) {
+                    data[i] = data[i + 1] = data[i + 2] = 255;
+                  } else {
+                    // Любой цветной (синий, красный, фиолетовый) и чёрный текст переводим в чёткий чёрный с сохранением сглаживания
+                    const val = Math.max(0, Math.round((Math.min(gray, minCh) - 20) * 1.3));
+                    data[i] = data[i + 1] = data[i + 2] = val;
+                  }
+                }
+
+                ctx.putImageData(imgData, 0, 0);
+              } catch (err) {
+                console.warn('Ошибка обработки canvas navision:', err);
+              }
+            }
+
+            canvas.toBlob((blob) => {
+              resolve(blob || file);
+            }, 'image/png');
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(tempUrl);
+            resolve(file);
+          };
+          img.src = tempUrl;
+        });
+      };
+
+      // Живые часы
+      useEffect(() => {
+        const timer = setInterval(() => setNow(new Date()), 1000);
+        return () => clearInterval(timer);
+      }, []);
+
+      // Автосохранение в localStorage
+      useEffect(() => {
+        try {
+          localStorage.setItem('expert_route_points', JSON.stringify(points));
+        } catch (e) {}
+      }, [points]);
+
+      useEffect(() => {
+        try {
+          localStorage.setItem('expert_route_start_type', startType);
+          localStorage.setItem('expert_route_custom_start', customStart);
+          localStorage.setItem('expert_route_return', returnToStart ? 'true' : 'false');
+        } catch (e) {}
+      }, [startType, customStart, returnToStart]);
+
+      // Предобработка левой колонки со временем (только для режима tablet)
+      const preprocessTimeColumnOnCanvas = (file) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          const tempUrl = URL.createObjectURL(file);
+          img.onload = () => {
+            URL.revokeObjectURL(tempUrl);
+            const canvas = document.createElement('canvas');
+            const padding = 20;
+
+            const nw = img.naturalWidth;
+            const nh = img.naturalHeight;
+
+            // Те же параметры Y, что и в tablet-фильтре:
+            const cropTop = Math.floor(nh * 0.15);
+            const cropH = Math.max(10, nh - cropTop);
+
+            // По горизонтали: левая колонка от 4% до 21% ширины (ширина 17%)
+            const cropLeft = Math.floor(nw * 0.04);
+            const cropW = Math.max(10, Math.floor(nw * 0.17));
+
+            const scale = 3.0;
+            const imgW = Math.round(cropW * scale);
+            const imgH = Math.round(cropH * scale);
+            const w = imgW + padding * 2;
+            const h = imgH + padding * 2;
+
+            canvas.width = w;
+            canvas.height = h;
+
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, w, h);
+
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, cropLeft, cropTop, cropW, cropH, padding, padding, imgW, imgH);
+
+            try {
+              const imgData = ctx.getImageData(0, 0, w, h);
+              const data = imgData.data;
+
+              for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+
+                // Контрастные градации серого: темный текст времени на белом фоне
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                const c = gray > 180 ? 255 : Math.max(0, Math.round((gray - 50) * 1.5));
+                data[i] = data[i + 1] = data[i + 2] = c;
+              }
+
+              ctx.putImageData(imgData, 0, 0);
+            } catch (err) {
+              console.warn('Ошибка обработки canvas time column:', err);
+            }
+
+            canvas.toBlob((blob) => {
+              resolve(blob || file);
+            }, 'image/png');
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(tempUrl);
+            resolve(file);
+          };
+          img.src = tempUrl;
+        });
+      };
+
+      // Обработка распознавания через Tesseract.js (прямой вызов recognize)
+      const processImagesOCR = async (imageFiles) => {
+        if (!imageFiles || imageFiles.length === 0) return;
+        setOcrLoading(true);
+        setOcrProgress(0);
+        setOcrError('');
+        setOcrStatusText('Подготовка распознавания...');
+
+        let combinedText = rawOcrText ? rawOcrText + '\n\n' : '';
+        const allNewPoints = [];
+
+        try {
+          for (let idx = 0; idx < imageFiles.length; idx++) {
+            const file = imageFiles[idx];
+            setOcrStatusText(`Обработка фото ${idx + 1} (${sourceMode === 'tablet' ? 'Планшет' : 'Navision'})...`);
+            const filteredBlob = await preprocessImageOnCanvas(file, sourceMode);
+
+            setOcrStatusText(`Распознавание адресов (фото ${idx + 1} из ${imageFiles.length})...`);
+            const imageUrl = URL.createObjectURL(filteredBlob);
+
+            let ocrResult = null;
+            try {
+              ocrResult = await Tesseract.recognize(imageUrl, 'rus', {
+                langPath: 'https://tessdata.projectnaptha.com/4.0.0_best',
+                logger: m => {
+                  if (m.status === 'recognizing text') {
+                    const p = Math.round((m.progress || 0) * 100);
+                    setOcrProgress(p);
+                    setOcrStatusText(`Распознавание: ${p}%`);
+                  } else if (m.status) {
+                    setOcrStatusText(m.status);
+                  }
+                }
+              });
+            } finally {
+              URL.revokeObjectURL(imageUrl);
+            }
+
+            const recognizedText = ocrResult?.data?.text || '';
+            const photoBlock = `--- Фото ${idx + 1} ---\n` + recognizedText + '\n';
+            combinedText += photoBlock;
+
+            if (sourceMode === 'tablet') {
+              // РЕЖИМ ПЛАНШЕТ: парсим адреса с Y-координатами и запускаем Проход 2 (распознавание времени)
+              const addrItems = [];
+              const lines = ocrResult?.data?.lines || [];
+
+              if (lines.length > 0) {
+                for (const line of lines) {
+                  const lineText = line.text || '';
+                  const parsed = parseAddresses(lineText);
+                  if (parsed && parsed.length > 0) {
+                    const y = line.bbox ? (line.bbox.y0 + line.bbox.y1) / 2 : null;
+                    for (const addr of parsed) {
+                      addrItems.push({ address: addr, y });
+                    }
+                  }
+                }
+              }
+
+              // Запасной вариант: если lines пуст или не дал адресов, парсим через общий text
+              if (addrItems.length === 0) {
+                const fallbackAddrs = parseAddresses(recognizedText);
+                for (const addr of fallbackAddrs) {
+                  addrItems.push({ address: addr, y: null });
+                }
+              }
+
+              if (addrItems.length > 0) {
+                // Проход 2: Распознавание колонки со временем
+                setOcrStatusText(`Распознавание времени (фото ${idx + 1} из ${imageFiles.length})...`);
+                const timeBlob = await preprocessTimeColumnOnCanvas(file);
+                const timeImageUrl = URL.createObjectURL(timeBlob);
+
+                const timeItems = [];
+                try {
+                  const timeResult = await Tesseract.recognize(timeImageUrl, 'rus', {
+                    langPath: 'https://tessdata.projectnaptha.com/4.0.0_best',
+                    logger: m => {
+                      if (m.status === 'recognizing text') {
+                        const p = Math.round((m.progress || 0) * 100);
+                        setOcrProgress(p);
+                        setOcrStatusText(`Время: ${p}%`);
+                      }
+                    }
+                  });
+
+                  const timeLines = timeResult?.data?.lines || [];
+                  for (const tLine of timeLines) {
+                    const rawLine = tLine.text || '';
+                    // Удаляем дату (например: 19.11.2026 или 19.11.26), чтобы не путать со временем
+                    const withoutDate = rawLine.replace(/\d{2}\.\d{2}\.\d{2,4}/g, '');
+                    const timeMatch = withoutDate.match(/\b([01]?\d|2[0-3])[:;]([0-5]\d)\b/);
+                    if (timeMatch) {
+                      const h = timeMatch[1].padStart(2, '0');
+                      const m = timeMatch[2];
+                      const timeStr = `${h}:${m}`;
+                      const y = tLine.bbox ? (tLine.bbox.y0 + tLine.bbox.y1) / 2 : null;
+                      timeItems.push({ time: timeStr, y });
+                    }
+                  }
+                } catch (timeErr) {
+                  console.warn('Ошибка распознавания времени:', timeErr);
+                } finally {
+                  URL.revokeObjectURL(timeImageUrl);
+                }
+
+                // Геометрическое сопоставление времени с адресами по оси Y
+                const usedTimeIndices = new Set();
+                for (const addrItem of addrItems) {
+                  let matchedTime = '';
+                  if (addrItem.y !== null && timeItems.length > 0) {
+                    let minDiff = 350; // Порог не более 350 пикселей на масштабе 3x
+                    let bestIdx = -1;
+                    for (let tIdx = 0; tIdx < timeItems.length; tIdx++) {
+                      if (!usedTimeIndices.has(tIdx) && timeItems[tIdx].y !== null) {
+                        const diff = Math.abs(timeItems[tIdx].y - addrItem.y);
+                        if (diff < minDiff) {
+                          minDiff = diff;
+                          bestIdx = tIdx;
+                        }
+                      }
+                    }
+                    if (bestIdx !== -1) {
+                      matchedTime = timeItems[bestIdx].time;
+                      usedTimeIndices.add(bestIdx);
+                    }
+                  }
+                  allNewPoints.push({ address: addrItem.address, time: matchedTime });
+                }
+              }
+            } else {
+              // РЕЖИМ NAVISION: парсим строки через parseNavisionText (адрес + время)
+              const navPoints = parseNavisionText(recognizedText);
+              if (navPoints.length > 0) {
+                for (const pt of navPoints) {
+                  allNewPoints.push(pt);
+                }
+              } else {
+                // Запасной вариант при сбое построчного разбора
+                const fallbackAddrs = parseAddresses(recognizedText);
+                for (const addr of fallbackAddrs) {
+                  allNewPoints.push({ address: addr, time: '' });
+                }
+              }
+            }
+          }
+
+          setRawOcrText(combinedText);
+
+          if (allNewPoints.length > 0) {
+            const normalize = s => s.toLowerCase().replace(/[^а-яёa-z0-9]/g, '');
+            setPoints(prev => {
+              const seenKeys = new Set(prev.map(p => normalize(p.address)));
+              const uniqueNewPoints = [];
+              for (const item of allNewPoints) {
+                const key = normalize(item.address);
+                if (key && !seenKeys.has(key)) {
+                  seenKeys.add(key);
+                  uniqueNewPoints.push({
+                    id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+                    address: item.address,
+                    time: item.time || '',
+                    timeMode: null
+                  });
+                }
+              }
+              const combined = [...prev, ...uniqueNewPoints];
+              return sortPointsByTime(combined);
+            });
+          }
+        } catch (err) {
+          console.error('Ошибка OCR:', err);
+          setOcrError(err.message || String(err));
+        } finally {
+          setOcrLoading(false);
+          setOcrProgress(0);
+          setOcrStatusText('');
+        }
+      };
+
+      // Добавление новых изображений
+      const handleAddFiles = (files) => {
+        const fileArr = Array.from(files).filter(f => f.type.startsWith('image/'));
+        if (fileArr.length === 0) return;
+
+        const newImgs = fileArr.map(file => ({
+          id: 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+          file,
+          previewUrl: URL.createObjectURL(file)
+        }));
+
+        setImages(prev => [...prev, ...newImgs]);
+        processImagesOCR(fileArr);
+      };
+
+      // Удаление одной картинки
+      const handleRemoveImage = (id) => {
+        setImages(prev => {
+          const target = prev.find(img => img.id === id);
+          if (target && target.previewUrl) {
+            URL.revokeObjectURL(target.previewUrl);
+          }
+          return prev.filter(img => img.id !== id);
+        });
+      };
+
+      // Глобальный перехват Paste (вставка из буфера)
+      useEffect(() => {
+        const handlePaste = (e) => {
+          // Если фокус в текстовом поле, даем вставить обычный текст
+          if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+            return;
+          }
+          if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+            const imgFiles = Array.from(e.clipboardData.files).filter(f => f.type.startsWith('image/'));
+            if (imgFiles.length > 0) {
+              e.preventDefault();
+              handleAddFiles(imgFiles);
+            }
+          }
+        };
+
+        window.addEventListener('paste', handlePaste);
+        return () => window.removeEventListener('paste', handlePaste);
+      }, [rawOcrText]);
+
+      // Кнопка вставки из буфера обмена через API
+      const handlePasteFromClipboardBtn = async () => {
+        try {
+          if (!navigator.clipboard || !navigator.clipboard.read) {
+            alert('Прямой доступ к буферу не поддерживается вашим браузером. Нажмите Ctrl+V или вставьте фото долгим тапом.');
+            return;
+          }
+          const clipboardItems = await navigator.clipboard.read();
+          const imageFiles = [];
+          for (const item of clipboardItems) {
+            const imageType = item.types.find(type => type.startsWith('image/'));
+            if (imageType) {
+              const blob = await item.getType(imageType);
+              const file = new File([blob], `clipboard-${Date.now()}.png`, { type: imageType });
+              imageFiles.push(file);
+            }
+          }
+          if (imageFiles.length > 0) {
+            handleAddFiles(imageFiles);
+          } else {
+            alert('В буфере обмена нет изображения. Скопируйте скриншот и повторите попытку.');
+          }
+        } catch (err) {
+          alert('Для вставки из буфера разрешите доступ к буферу обмена или используйте сочетание клавиш Ctrl+V.');
+        }
+      };
+
+      // Кнопка "Новый день" (сброс всего)
+      const handleNewDay = () => {
+        if (confirm('Начать новый день? Все загруженные скриншоты и список точек маршрута будут очищены.')) {
+          images.forEach(img => {
+            if (img.previewUrl) URL.revokeObjectURL(img.previewUrl);
+          });
+          setImages([]);
+          setPoints([]);
+          setRawOcrText('');
+          setOcrError('');
+          setShowRawText(false);
+          localStorage.removeItem('expert_route_points');
+        }
+      };
+
+      // Управление точками маршрута
+      const handleMovePoint = (index, direction) => {
+        const targetIndex = index + direction;
+        if (targetIndex < 0 || targetIndex >= points.length) return;
+        setPoints(prev => {
+          const updated = [...prev];
+          const temp = updated[index];
+          updated[index] = updated[targetIndex];
+          updated[targetIndex] = temp;
+          return updated;
+        });
+      };
+
+      const handleRemovePoint = (index) => {
+        setPoints(prev => prev.filter((_, i) => i !== index));
+      };
+
+      const handleUpdatePointAddress = (index, newAddress) => {
+        setPoints(prev => {
+          const updated = [...prev];
+          updated[index] = { ...updated[index], address: newAddress };
+          return updated;
+        });
+      };
+
+      const handleUpdatePointTime = (index, rawValue) => {
+        const formatted = formatTimeInput(rawValue);
+        setPoints(prev => {
+          const updated = [...prev];
+          updated[index] = { ...updated[index], time: formatted };
+          return updated;
+        });
+      };
+
+      const handleToggleTimeMode = (index, mode) => {
+        setPoints(prev => {
+          const updated = [...prev];
+          const currentMode = updated[index]?.timeMode;
+          const newMode = currentMode === mode ? null : mode;
+          updated[index] = { ...updated[index], timeMode: newMode };
+
+          const tooltipText = newMode === 'strict'
+            ? 'Строго ко времени'
+            : newMode === 'flexible'
+              ? 'В течение дня'
+              : 'Режим снят';
+          showPointTooltip(updated[index].id, tooltipText);
+
+          return updated;
+        });
+      };
+
+      const handleAddManualPoint = () => {
+        setPoints(prev => [
+          ...prev,
+          {
+            id: 'point_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+            address: '',
+            time: '',
+            timeMode: null
+          }
+        ]);
+      };
+
+      // Формирование ссылки Яндекс Карт
+      const handleOpenYandexMaps = () => {
+        if (points.length === 0) {
+          alert('Маршрут пуст. Добавьте или распознайте адреса точек.');
+          return;
+        }
+
+        // Проверяем валидность адресов
+        const validPoints = points.filter(p => p.address && p.address.trim().length > 0);
+        if (validPoints.length === 0) {
+          alert('Пожалуйста, заполните адреса точек маршрута.');
+          return;
+        }
+
+        const segments = [];
+
+        // 1. Точка старта (если не 'none')
+        if (startType === 'custom') {
+          if (!customStart.trim()) {
+            alert('Укажите адрес точки старта или выберите другой вариант старта.');
+            return;
+          }
+          segments.push(encodeURIComponent(customStart.trim()));
+        } else if (startType === 'current') {
+          // Пустой сегмент для текущего местоположения
+          segments.push('');
+        }
+        // Если startType === 'none', массив строится строго от первой точки
+
+        // 2. Промежуточные точки
+        validPoints.forEach(p => {
+          segments.push(encodeURIComponent(p.address.trim()));
+        });
+
+        // 3. Возврат в точку старта (только если не 'none')
+        if (returnToStart && startType !== 'none') {
+          if (startType === 'custom') {
+            segments.push(encodeURIComponent(customStart.trim()));
+          } else if (startType === 'current') {
+            segments.push('');
+          }
+        }
+
+        const rtextValue = segments.join('~');
+        const url = `https://yandex.ru/maps/?rtext=${rtextValue}&rtt=auto`;
+        window.open(url, '_blank');
+      };
+
+      // Форматирование даты и времени для шапки
+      const formatDate = (date) => {
+        const d = String(date.getDate()).padStart(2, '0');
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const y = date.getFullYear();
+        return `${d}.${m}.${y}`;
+      };
+
+      const formatTime = (date) => {
+        const h = String(date.getHours()).padStart(2, '0');
+        const min = String(date.getMinutes()).padStart(2, '0');
+        const s = String(date.getSeconds()).padStart(2, '0');
+        return `${h}:${min}:${s}`;
+      };
+
+      return (
+        <div className={`min-h-screen transition-colors duration-200 ${(theme === 'expert-dark' || theme === 'dark') ? 'bg-[#101112] text-gray-100' : theme === 'newyear' ? 'bg-[#0A1912] text-gray-100' : t('bg-[#101112] text-gray-100', 'bg-[#F0F2F5] text-gray-900', 'bg-pink-50 text-pink-950', 'bg-[#0B132B] text-blue-50', 'bg-emerald-50 text-emerald-950', 'bg-[#16110F] text-[#F5EBE6]', 'bg-[#F4F5F7] text-gray-900')}`}>
+          
+          {/* Снегопад для темы "Новогодняя" */}
+          {theme === 'newyear' && (
+            <div className="fixed inset-0 pointer-events-none overflow-hidden z-40">
+              {[
+                { left: '5%', dur: '9s', delay: '0s', size: '12px' },
+                { left: '15%', dur: '12s', delay: '2s', size: '16px' },
+                { left: '25%', dur: '10s', delay: '4s', size: '10px' },
+                { left: '35%', dur: '14s', delay: '1s', size: '14px' },
+                { left: '48%', dur: '11s', delay: '3s', size: '12px' },
+                { left: '60%', dur: '13s', delay: '5s', size: '15px' },
+                { left: '72%', dur: '9.5s', delay: '1.5s', size: '11px' },
+                { left: '83%', dur: '12.5s', delay: '3.5s', size: '16px' },
+                { left: '92%', dur: '10.5s', delay: '0.5s', size: '13px' }
+              ].map((s, idx) => (
+                <span 
+                  key={idx} 
+                  className="snowflake" 
+                  style={{ left: s.left, animationDuration: s.dur, animationDelay: s.delay, fontSize: s.size }}
+                >
+                  ❄
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Модальное окно настроек */}
+          {showSettings && (
+            <div 
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in"
+              onClick={() => setShowSettings(false)}
+            >
+              <div 
+                className={`w-full max-w-sm rounded-2xl border-2 ${t('bg-[#282B30] border-[#FFB300]', 'bg-white border-amber-900', 'bg-white border-pink-400', 'bg-white border-blue-600', 'bg-white border-emerald-600', 'bg-white border-[#8D6E63]', 'bg-white border-[#C62828]')} p-5 shadow-2xl`}
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className={`text-base font-black tracking-widest ${t('text-[#FFB300]', 'text-amber-900', 'text-pink-600', 'text-blue-600', 'text-emerald-700', 'text-[#5D4037]', 'text-[#9A1B24]')}`}>
+                    НАСТРОЙКИ
+                  </h3>
+                  <button 
+                    type="button"
+                    onClick={() => setShowSettings(false)} 
+                    className="p-1 opacity-70 hover:opacity-100 text-lg font-bold min-h-[44px] min-w-[44px] flex items-center justify-center"
+                    title="Закрыть"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className={`p-3 rounded-xl border flex justify-between items-center mb-4 ${t('bg-[#1E2125] border-gray-700', 'bg-gray-50 border-gray-300', 'bg-pink-100 border-pink-200', 'bg-blue-100 border-blue-200', 'bg-emerald-100 border-emerald-200', 'bg-[#EFEBE9] border-[#D7CCC8]', 'bg-[#F4F5F7] border-gray-200')}`}>
+                  <span className="text-sm font-bold">Тема оформления</span>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      const themes = ['expert', 'expert-dark', 'newyear', 'dark', 'light', 'marine', 'coffee', 'pink', 'mint'];
+                      const nextIdx = (themes.indexOf(theme) + 1) % themes.length;
+                      setTheme(themes[nextIdx]);
+                    }} 
+                    className={`min-h-[44px] px-3.5 py-1.5 rounded-lg text-xs font-black flex items-center gap-1.5 transition-all ${
+                      theme === 'expert' ? 'bg-[#D32F2F] text-white shadow-sm' : 
+                      theme === 'expert-dark' ? 'bg-[#75161F] text-white border border-[#FF5252]/40 shadow-sm' : 
+                      theme === 'newyear' ? 'bg-gradient-to-r from-[#0F291E] to-[#991B1B] text-[#FBBF24] border border-[#FBBF24]/50 shadow-sm' : 
+                      t('bg-[#FFB300] text-black', 'bg-black text-white', 'bg-pink-500 text-white', 'bg-blue-600 text-white', 'bg-emerald-600 text-white', 'bg-[#6D4C41] text-white', 'bg-[#C62828] text-white')
+                    }`}
+                  >
+                    <span>🎨</span>
+                    <span>
+                      {theme === 'expert' ? 'ЭКСПЕРТ' : 
+                       theme === 'expert-dark' ? 'ЭКСПЕРТ НОЧЬ' : 
+                       theme === 'newyear' ? '🎄 НОВОГОДНЯЯ' : 
+                       theme === 'dark' ? 'ТЕМНАЯ' : 
+                       theme === 'light' ? 'СВЕТЛАЯ' : 
+                       theme === 'marine' ? 'МОРСКАЯ' : 
+                       theme === 'coffee' ? 'КОФЕЙНАЯ' : 
+                       theme === 'pink' ? 'РОЗОВАЯ' : 'МЯТНАЯ'}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="mt-4 flex justify-end">
+                  <button 
+                    type="button"
+                    onClick={() => setShowSettings(false)} 
+                    className={`min-h-[48px] px-6 py-2 text-sm font-bold rounded-xl transition-all ${t('bg-[#FFB300] text-black hover:bg-[#FFA000]', 'bg-amber-600 text-white hover:bg-amber-700', 'bg-pink-500 text-white hover:bg-pink-600', 'bg-blue-600 text-white hover:bg-blue-700', 'bg-emerald-600 text-white hover:bg-emerald-700', 'bg-[#6D4C41] text-white hover:bg-[#5D4037]', 'bg-[#C62828] text-white hover:bg-[#B71C1C]')}`}
+                  >
+                    ЗАКРЫТЬ
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="max-w-[680px] mx-auto min-h-screen flex flex-col p-3 sm:p-4 pb-36 sm:pb-40">
+            
+            {/* 1. Шапка (Header) с фирменным градиентом в цвет темы */}
+            <header className={`rounded-2xl shadow-lg border p-4 mb-4 flex items-center justify-between gap-3 text-white transition-all ${
+              theme === 'newyear' 
+                ? 'bg-gradient-to-r from-[#0F291E] via-[#7F1D1D] to-[#0F291E] border-[#FBBF24]/60'
+                : (theme === 'expert' || theme === 'expert-dark') 
+                  ? 'bg-gradient-to-r from-[#4A0B11] via-[#75161F] to-[#4A0B11] border-[#C62828]/50' 
+                  : t(
+                      'bg-gradient-to-r from-[#1A1D21] via-[#282B30] to-[#1A1D21] border-[#FFB300]/50',
+                      'bg-gradient-to-r from-amber-700 via-amber-600 to-amber-700 border-amber-800',
+                      'bg-gradient-to-r from-pink-700 via-pink-600 to-pink-700 border-pink-800',
+                      'bg-gradient-to-r from-[#0F2547] via-[#1D4ED8] to-[#0F2547] border-blue-400/30',
+                      'bg-gradient-to-r from-emerald-800 via-emerald-600 to-emerald-800 border-emerald-900',
+                      'bg-gradient-to-r from-[#3E2723] via-[#5D4037] to-[#3E2723] border-[#8D6E63]/40'
+                    )
+            }`}>
+              <div>
+                <h1 className="text-xl sm:text-2xl font-black text-white tracking-wide flex items-center gap-2">
+                  <span>Маршрут</span>
+                </h1>
+                <div className="text-xs sm:text-sm mt-1 font-mono flex items-center gap-2 text-white/80">
+                  <span>{formatDate(now)}</span>
+                  <span className="opacity-40">|</span>
+                  <span className="font-semibold text-white">{formatTime(now)}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={handleNewDay}
+                  type="button"
+                  className="min-h-[48px] px-3.5 py-2 rounded-xl text-[16px] sm:text-sm font-semibold flex items-center justify-center transition-all flex-shrink-0 bg-white/10 hover:bg-white/20 active:bg-white/30 text-white border border-white/20 shadow-sm"
+                  title="Начать новый день и очистить список"
+                >
+                  <span>Новый день</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  className="min-h-[48px] w-[48px] rounded-xl flex items-center justify-center transition-all flex-shrink-0 bg-white/10 hover:bg-white/20 active:bg-white/30 text-white border border-white/20 shadow-sm"
+                  title="Настройки темы"
+                >
+                  <svg className="w-5 h-5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
+                </button>
+              </div>
+            </header>
+
+            {/* 2. Блок загрузки изображений и OCR */}
+            <section className={`rounded-2xl shadow-sm border p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
+              <h2 className={`text-sm font-bold uppercase tracking-wider mb-3 ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
+                <span>Загрузка скриншотов заявок</span>
+              </h2>
+
+              {/* Переключатель режима источника */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => setSourceMode('tablet')}
+                  className={`min-h-[48px] px-3 py-2.5 rounded-xl font-medium text-[16px] sm:text-sm flex items-center justify-center gap-2 border transition-all ${
+                    sourceMode === 'tablet'
+                      ? t('bg-[#FFB300] border-[#FFB300] text-black shadow-sm', 'bg-amber-500 border-amber-600 text-white shadow-sm', 'bg-pink-500 border-pink-600 text-white shadow-sm', 'bg-sky-500 border-sky-600 text-white shadow-sm', 'bg-emerald-600 border-emerald-700 text-white shadow-sm', 'bg-[#6D4C41] border-[#5D4037] text-white shadow-sm', 'bg-[#C62828] border-[#B71C1C] text-white shadow-sm')
+                      : t('bg-[#1E2125] border-gray-700 text-gray-300 hover:bg-[#33363B]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100', 'bg-pink-50 border-pink-200 text-pink-700 hover:bg-pink-100', 'bg-[#0B132B] border-[#253652] text-blue-200 hover:bg-[#162238]', 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100', 'bg-[#16110F] border-[#3E2F2A] text-[#D7B399] hover:bg-[#221A17]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100')
+                  }`}
+                >
+                  <span>📱</span>
+                  <span>Планшет</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSourceMode('navision')}
+                  className={`min-h-[48px] px-3 py-2.5 rounded-xl font-medium text-[16px] sm:text-sm flex items-center justify-center gap-2 border transition-all ${
+                    sourceMode === 'navision'
+                      ? t('bg-[#FFB300] border-[#FFB300] text-black shadow-sm', 'bg-amber-500 border-amber-600 text-white shadow-sm', 'bg-pink-500 border-pink-600 text-white shadow-sm', 'bg-sky-500 border-sky-600 text-white shadow-sm', 'bg-emerald-600 border-emerald-700 text-white shadow-sm', 'bg-[#6D4C41] border-[#5D4037] text-white shadow-sm', 'bg-[#C62828] border-[#B71C1C] text-white shadow-sm')
+                      : t('bg-[#1E2125] border-gray-700 text-gray-300 hover:bg-[#33363B]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100', 'bg-pink-50 border-pink-200 text-pink-700 hover:bg-pink-100', 'bg-[#0B132B] border-[#253652] text-blue-200 hover:bg-[#162238]', 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100', 'bg-[#16110F] border-[#3E2F2A] text-[#D7B399] hover:bg-[#221A17]', 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100')
+                  }`}
+                >
+                  <span>💻</span>
+                  <span>Navision</span>
+                </button>
+              </div>
+
+              {/* Drag and Drop область */}
+              <div
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  if (e.dataTransfer.files) handleAddFiles(e.dataTransfer.files);
+                }}
+                onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-colors ${
+                  isDragging 
+                    ? t('border-[#FFB300] bg-[#FFB300]/10', 'border-amber-500 bg-amber-50', 'border-pink-500 bg-pink-50', 'border-sky-400 bg-sky-950/30', 'border-emerald-500 bg-emerald-50', 'border-[#D7B399] bg-[#362924]', 'border-[#C62828] bg-rose-50') 
+                    : t('border-gray-700 hover:border-gray-600 bg-[#1E2125]', 'border-slate-300 hover:border-slate-400 bg-slate-50', 'border-pink-200 hover:border-pink-300 bg-pink-50/50', 'border-[#253652] hover:border-sky-500/50 bg-[#0B132B]', 'border-emerald-200 hover:border-emerald-300 bg-emerald-50/50', 'border-[#3E2F2A] hover:border-[#6D4C41] bg-[#16110F]', 'border-slate-300 hover:border-slate-400 bg-slate-50')
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) handleAddFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <div className="flex flex-col items-center justify-center gap-2">
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center text-3xl font-bold leading-none select-none pb-0.5 mx-auto ${t('bg-[#FFB300]/20 text-[#FFB300]', 'bg-amber-100 text-amber-600', 'bg-pink-100 text-pink-600', 'bg-sky-500/20 text-sky-400', 'bg-emerald-100 text-emerald-700', 'bg-[#382B26] text-[#D7B399]', 'bg-rose-100 text-[#C62828]')}`}>
+                    +
+                  </div>
+                  <div className={`font-medium text-[16px] sm:text-sm ${t('text-gray-100', 'text-slate-800', 'text-pink-950', 'text-blue-50', 'text-emerald-950', 'text-[#F5EBE6]', 'text-slate-800')}`}>
+                    Нажмите для выбора фото или перетащите сюда
+                  </div>
+                  <div className={`text-xs ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#A1887F]', 'text-slate-500')}`}>
+                    Поддерживается загрузка нескольких скриншотов сразу
+                  </div>
+                </div>
+              </div>
+
+              {/* Кнопка вставки из буфера обмена */}
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={handlePasteFromClipboardBtn}
+                  className={`w-full min-h-[48px] px-4 py-2.5 rounded-xl border text-[16px] sm:text-sm font-medium flex items-center justify-center gap-2 transition-colors ${t('border-gray-700 bg-[#1E2125] hover:bg-[#33363B] text-gray-200', 'border-slate-300 bg-white hover:bg-slate-50 text-slate-700', 'border-pink-200 bg-white hover:bg-pink-50 text-pink-700', 'border-[#253652] bg-[#162032] hover:bg-[#1E3A5F] text-blue-100', 'border-emerald-200 bg-white hover:bg-emerald-50 text-emerald-800', 'border-[#3E2F2A] bg-[#241C19] hover:bg-[#382B26] text-[#F5EBE6]', 'border-slate-300 bg-white hover:bg-slate-50 text-slate-700')}`}
+                >
+                  <span>Вставить скриншот из буфера обмена</span>
+                </button>
+              </div>
+
+              {/* Индикатор прогресса OCR */}
+              {ocrLoading && (
+                <div className={`mt-4 p-3.5 rounded-xl border ${t('bg-[#1E2125] border-amber-900/50 text-amber-300', 'bg-amber-50 border-amber-200 text-amber-900', 'bg-pink-50 border-pink-200 text-pink-900', 'bg-[#131D31] border-blue-800 text-blue-200', 'bg-emerald-50 border-emerald-200 text-emerald-900', 'bg-[#221A17] border-[#3E2F2A] text-[#D7B399]', 'bg-rose-50 border-rose-200 text-rose-900')}`}>
+                  <div className="flex items-center justify-between text-xs font-semibold mb-2">
+                    <span className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+                      {ocrStatusText}
+                    </span>
+                    <span>{ocrProgress}%</span>
+                  </div>
+                  <div className="w-full bg-black/20 h-2 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-200 rounded-full ${t('bg-[#FFB300]', 'bg-amber-500', 'bg-pink-500', 'bg-sky-400', 'bg-emerald-600', 'bg-[#D7B399]', 'bg-[#C62828]')}`}
+                      style={{ width: `${ocrProgress}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+
+              {/* Сообщение об ошибке OCR */}
+              {ocrError && (
+                <div className="mt-3 p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs sm:text-sm flex items-start gap-2.5">
+                  <span className="text-rose-600 font-bold text-base flex-shrink-0">⚠️</span>
+                  <div className="flex-1">
+                    <div className="font-semibold text-rose-900">Ошибка распознавания:</div>
+                    <div className="mt-0.5 font-mono text-xs break-all text-rose-700">{ocrError}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Превью загруженных фото */}
+              {images.length > 0 && (
+                <div className="mt-4">
+                  <div className={`text-xs font-semibold mb-2 ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
+                    Загруженные скриншоты ({images.length}):
+                  </div>
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {images.map(img => (
+                      <div key={img.id} className={`relative group rounded-lg overflow-hidden border aspect-video ${t('border-gray-700 bg-[#1E2125]', 'border-slate-200 bg-slate-100', 'border-pink-200 bg-pink-50', 'border-[#253652] bg-[#162238]', 'border-emerald-200 bg-emerald-50', 'border-[#3E2F2A] bg-[#221A17]', 'border-slate-200 bg-slate-100')}`}>
+                        <img
+                          src={img.previewUrl}
+                          alt="Скриншот"
+                          className="w-full h-full object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveImage(img.id);
+                          }}
+                          className="absolute top-1 right-1 w-7 h-7 bg-black/70 hover:bg-black text-white rounded-full flex items-center justify-center transition-colors"
+                          title="Удалить фото"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* 3. Маршрутный лист (Список точек) */}
+            <section className={`rounded-2xl shadow-sm border p-4 mb-4 ${t('bg-[#282B30] border-[#3A3D42]', 'bg-white border-slate-200', 'bg-white border-pink-200', 'bg-[#162032] border-[#253652]', 'bg-white border-emerald-200', 'bg-[#241C19] border-[#3E2F2A]', 'bg-white border-slate-200')}`}>
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <h2 className={`text-sm font-bold uppercase tracking-wider ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
+                  <span>Точки маршрута ({points.length})</span>
+                </h2>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={points.length < 2}
+                    onClick={() => setPoints(prev => sortPointsByTime(prev))}
+                    className={`min-h-[48px] px-3 py-1.5 rounded-xl text-[16px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${t('bg-[#FFB300]/15 text-[#FFB300] hover:bg-[#FFB300]/25', 'bg-slate-100 text-slate-700 hover:bg-slate-200', 'bg-pink-100 text-pink-700 hover:bg-pink-200', 'bg-[#1E3A5F] text-sky-300 hover:bg-sky-900/50', 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200', 'bg-[#382B26] text-[#D7B399] hover:bg-[#4E342E]', 'bg-[#FCE8E8] text-[#9A1B24] hover:bg-[#F8CACA]')}`}
+                    title="Сортировать точки по времени визита"
+                  >
+                    <svg className="w-4 h-4 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m3 16 4 4 4-4"/>
+                      <path d="M7 20V4"/>
+                      <path d="m21 8-4-4-4 4"/>
+                      <path d="M17 4v16"/>
+                    </svg>
+                    <span>По времени</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleAddManualPoint}
+                    className={`min-h-[48px] px-3.5 py-1.5 rounded-xl text-[16px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${t('bg-[#FFB300]/20 text-[#FFB300] hover:bg-[#FFB300]/30', 'bg-amber-50 text-amber-800 hover:bg-amber-100', 'bg-pink-100 text-pink-700 hover:bg-pink-200', 'bg-[#1E3A5F] text-sky-300 hover:bg-sky-900/50', 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200', 'bg-[#382B26] text-[#D7B399] hover:bg-[#4E342E]', 'bg-[#FCE8E8] text-[#9A1B24] hover:bg-[#F8CACA]')}`}
+                  >
+                    <span>+ Добавить адрес</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Пустой список */}
+              {points.length === 0 && (
+                <div className={`text-center py-8 px-4 border border-dashed rounded-xl ${t('border-gray-700 bg-[#1E2125] text-gray-400', 'border-slate-200 bg-slate-50 text-slate-500', 'border-pink-200 bg-pink-50/50 text-pink-700', 'border-[#253652] bg-[#0B132B] text-blue-300', 'border-emerald-200 bg-emerald-50/50 text-emerald-700', 'border-[#3E2F2A] bg-[#16110F] text-[#D7B399]', 'border-slate-200 bg-slate-50 text-slate-500')}`}>
+                  <p className="text-sm font-medium">Маршрутный лист пока пуст</p>
+                  <p className="text-xs opacity-70 mt-1">
+                    Загрузите скриншот с заявками или добавьте точку вручную
+                  </p>
+                </div>
+              )}
+
+              {/* Список карточек адресов */}
+              <div className="space-y-2.5">
+                {points.map((pt, idx) => (
+                  <div
+                    key={pt.id}
+                    className={`p-3 rounded-xl border flex flex-col gap-2 transition-shadow hover:shadow-sm ${t('bg-[#1E2125] border-gray-700', 'bg-slate-50 border-slate-200', 'bg-pink-50/50 border-pink-200', 'bg-[#131D31] border-[#253652]', 'bg-emerald-50/50 border-emerald-200', 'bg-[#221A17] border-[#3E2F2A]', 'bg-slate-50 border-slate-200')}`}
+                  >
+                    <div className="relative flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                      {/* Номер точки */}
+                      <div className={`w-7 h-7 rounded-full font-bold text-xs flex items-center justify-center flex-shrink-0 ${t('bg-[#FFB300] text-black', 'bg-slate-900 text-white', 'bg-pink-600 text-white', 'bg-sky-500 text-black', 'bg-emerald-700 text-white', 'bg-[#8D6E63] text-white', 'bg-[#C62828] text-white')}`}>
+                        {idx + 1}
+                      </div>
+
+                      {/* Редактируемый бейдж времени визита */}
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={5}
+                        value={pt.time || ''}
+                        onChange={(e) => handleUpdatePointTime(idx, e.target.value)}
+                        placeholder="00:00"
+                        className={`min-h-[36px] w-[84px] sm:w-[92px] px-2 py-1 rounded-lg font-mono font-semibold text-xs sm:text-sm text-center border transition-all focus:outline-none flex-shrink-0 ${
+                          pt.time
+                            ? t(
+                                'bg-[#FFB300]/20 border-[#FFB300]/40 text-[#FFB300] focus:border-[#FFB300]',
+                                'bg-amber-100 border-amber-300 text-amber-900 focus:border-amber-500',
+                                'bg-pink-100 border-pink-300 text-pink-800 focus:border-pink-500',
+                                'bg-[#1E3A5F] border-sky-500/40 text-sky-300 focus:border-sky-400',
+                                'bg-emerald-100 border-emerald-300 text-emerald-900 focus:border-emerald-600',
+                                'bg-[#382B26] border-[#D7B399]/40 text-[#D7B399] focus:border-[#D7B399]',
+                                'bg-[#FCE8E8] border-[#C62828]/30 text-[#9A1B24] focus:border-[#C62828]'
+                              )
+                            : t(
+                                'bg-[#1E2125] border-gray-700/80 text-gray-300 placeholder:text-gray-500 focus:border-[#FFB300]',
+                                'bg-slate-100 border-slate-300 text-slate-700 placeholder:text-slate-400 focus:border-amber-500',
+                                'bg-pink-50 border-pink-200 text-pink-700 placeholder:text-pink-300 focus:border-pink-500',
+                                'bg-[#131D31] border-[#253652] text-blue-200 placeholder:text-blue-400/50 focus:border-sky-400',
+                                'bg-emerald-50 border-emerald-200 text-emerald-800 placeholder:text-emerald-400/60 focus:border-emerald-600',
+                                'bg-[#221A17] border-[#3E2F2A] text-[#D7B399] placeholder:text-[#8D6E63] focus:border-[#D7B399]',
+                                'bg-slate-100 border-slate-300 text-slate-700 placeholder:text-slate-400 focus:border-[#C62828]'
+                              )
+                        }`}
+                      />
+
+                      {/* Две кнопки-статуса: Замок (строго) и В течение дня */}
+                      <div className="relative flex items-center gap-1">
+                        {/* Кнопка "Строго ко времени" */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleTimeMode(idx, 'strict')}
+                          className={`w-9 h-9 min-h-[36px] rounded-lg border flex items-center justify-center transition-all ${
+                            pt.timeMode === 'strict'
+                              ? t(
+                                  'bg-rose-500/20 border-rose-500 text-rose-400 shadow-sm',
+                                  'bg-rose-500/15 border-rose-500 text-rose-600 shadow-sm',
+                                  'bg-rose-500/15 border-rose-500 text-rose-600 shadow-sm',
+                                  'bg-rose-500/20 border-rose-500 text-rose-400 shadow-sm',
+                                  'bg-rose-500/15 border-rose-500 text-rose-600 shadow-sm',
+                                  'bg-rose-500/20 border-rose-500 text-rose-400 shadow-sm',
+                                  'bg-rose-500/15 border-rose-500 text-rose-600 shadow-sm'
+                                )
+                              : t('border-gray-700 bg-[#282B30] text-gray-400 hover:text-gray-200 hover:border-gray-600', 'border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:border-slate-300', 'border-pink-200 bg-white text-pink-300 hover:text-pink-600 hover:border-pink-300', 'border-[#253652] bg-[#162032] text-blue-300/50 hover:text-blue-200 hover:border-sky-500/40', 'border-emerald-200 bg-white text-emerald-300 hover:text-emerald-700 hover:border-emerald-300', 'border-[#3E2F2A] bg-[#241C19] text-[#A1887F] hover:text-[#D7B399] hover:border-[#6D4C41]', 'border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:border-slate-300')
+                          }`}
+                          title="Выполнить строго в указанное время"
+                        >
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M9.5 16.5a7 7 0 1 1 6.7-9" />
+                            <path d="M9.5 5.5V9.5L7 12" />
+                            <path d="M16.5 10.5L22.5 21H10.5Z" />
+                            <path d="M16.5 14.5v3" />
+                            <circle cx="16.5" cy="19.3" r="0.6" fill="currentColor" stroke="none" />
+                          </svg>
+                        </button>
+
+                        {/* Кнопка "В течение дня" */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleTimeMode(idx, 'flexible')}
+                          className={`w-9 h-9 min-h-[36px] rounded-lg border flex items-center justify-center transition-all ${
+                            pt.timeMode === 'flexible'
+                              ? t(
+                                  'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-sm',
+                                  'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm',
+                                  'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm',
+                                  'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-sm',
+                                  'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm',
+                                  'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-sm',
+                                  'bg-emerald-500/15 border-emerald-500 text-emerald-700 shadow-sm'
+                                )
+                              : t('border-gray-700 bg-[#282B30] text-gray-400 hover:text-gray-200 hover:border-gray-600', 'border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:border-slate-300', 'border-pink-200 bg-white text-pink-300 hover:text-pink-600 hover:border-pink-300', 'border-[#253652] bg-[#162032] text-blue-300/50 hover:text-blue-200 hover:border-sky-500/40', 'border-emerald-200 bg-white text-emerald-300 hover:text-emerald-700 hover:border-emerald-300', 'border-[#3E2F2A] bg-[#241C19] text-[#A1887F] hover:text-[#D7B399] hover:border-[#6D4C41]', 'border-slate-200 bg-white text-slate-400 hover:text-slate-600 hover:border-slate-300')
+                          }`}
+                          title="Можно выполнить в течение дня"
+                        >
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="4.8" />
+                            <path d="M12 9.5V12h2.2" />
+                            <path d="M5.6 5.6A9 9 0 0 1 21 12" />
+                            <path d="M19 10.5L21 12.5L22.8 10.2" />
+                            <path d="M18.4 18.4A9 9 0 0 1 3 12" />
+                            <path d="M1.2 13.8L3 11.5L5 13.5" />
+                          </svg>
+                        </button>
+
+                        {/* Всплывающая подсказка при нажатии */}
+                        {toastTooltip.id === pt.id && (
+                          <div className="absolute -top-8 left-0 z-20 px-2 py-0.5 rounded-md text-[11px] font-bold shadow-md animate-fade-in bg-slate-900 text-white pointer-events-none whitespace-nowrap">
+                            {toastTooltip.text}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Кнопки перемещения вверх / вниз / удалить */}
+                      <div className="ml-auto flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => handleMovePoint(idx, -1)}
+                          className={`w-11 h-11 min-h-[48px] rounded-xl border disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center text-base font-bold shadow-sm transition-colors ${t('bg-[#282B30] border-gray-700 text-gray-200 hover:bg-[#33363B]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100', 'bg-white border-pink-200 text-pink-800 hover:bg-pink-50', 'bg-[#162032] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]', 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100')}`}
+                          title="Поднять выше"
+                        >
+                          ▲
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={idx === points.length - 1}
+                          onClick={() => handleMovePoint(idx, 1)}
+                          className={`w-11 h-11 min-h-[48px] rounded-xl border disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center text-base font-bold shadow-sm transition-colors ${t('bg-[#282B30] border-gray-700 text-gray-200 hover:bg-[#33363B]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100', 'bg-white border-pink-200 text-pink-800 hover:bg-pink-50', 'bg-[#162032] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]', 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]', 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100')}`}
+                          title="Опустить ниже"
+                        >
+                          ▼
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePoint(idx)}
+                          className={`w-11 h-11 min-h-[48px] rounded-xl border flex items-center justify-center text-base font-bold shadow-sm transition-colors ${t(
+                            'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
+                            'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
+                            'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
+                            'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
+                            'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
+                            'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
+                            'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200'
+                          )}`}
+                          title="Удалить точку"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Редактируемое поле адреса */}
+                    <div>
+                      <input
+                        type="text"
+                        value={pt.address}
+                        onChange={(e) => handleUpdatePointAddress(idx, e.target.value)}
+                        placeholder="Адрес точки..."
+                        className={`w-full min-h-[48px] px-3 py-2 rounded-lg border text-[16px] sm:text-sm focus:outline-none transition-shadow ${t('bg-[#282B30] border-gray-700 text-white focus:border-[#FFB300]', 'bg-white border-slate-300 text-slate-900 focus:border-amber-500', 'bg-white border-pink-200 text-pink-950 focus:border-pink-500', 'bg-[#162032] border-[#253652] text-blue-50 focus:border-sky-400', 'bg-white border-emerald-200 text-emerald-950 focus:border-emerald-600', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] focus:border-[#D7B399]', 'bg-white border-slate-300 text-slate-900 focus:border-[#C62828]')}`}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Настройки старта и возврата */}
+              <div className={`mt-5 pt-4 border-t space-y-3 ${t('border-gray-700', 'border-slate-200', 'border-pink-200', 'border-[#253652]', 'border-emerald-200', 'border-[#3E2F2A]', 'border-slate-200')}`}>
+                <div className={`text-xs font-bold uppercase tracking-wider ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
+                  Настройки старта и финиша
+                </div>
+
+                {/* Радиокнопки выбора старта */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <label className={`min-h-[48px] px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer transition-colors ${
+                    startType === 'none' 
+                      ? t('border-[#FFB300] bg-[#FFB300]/15 text-[#FFB300] font-medium', 'border-amber-500 bg-amber-50 text-amber-900 font-medium', 'border-pink-500 bg-pink-50 text-pink-900 font-medium', 'border-sky-400 bg-sky-950/40 text-sky-200 font-medium', 'border-emerald-500 bg-emerald-50 text-emerald-900 font-medium', 'border-[#D7B399] bg-[#362924] text-[#F5EBE6] font-medium', 'border-[#C62828] bg-rose-50 text-[#9A1B24] font-medium')
+                      : t('border-gray-700 bg-[#1E2125] text-gray-300 hover:bg-[#33363B]', 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100', 'border-pink-200 bg-pink-50/50 text-pink-700 hover:bg-pink-100', 'border-[#253652] bg-[#0B132B] text-blue-200 hover:bg-[#162238]', 'border-emerald-200 bg-emerald-50/50 text-emerald-800 hover:bg-emerald-100', 'border-[#3E2F2A] bg-[#16110F] text-[#D7B399] hover:bg-[#221A17]', 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100')
+                  }`}>
+                    <input
+                      type="radio"
+                      name="startType"
+                      checked={startType === 'none'}
+                      onChange={() => setStartType('none')}
+                      className="accent-amber-600"
+                    />
+                    <span className="text-[16px] sm:text-sm">Нет</span>
+                  </label>
+
+                  <label className={`min-h-[48px] px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer transition-colors ${
+                    startType === 'current' 
+                      ? t('border-[#FFB300] bg-[#FFB300]/15 text-[#FFB300] font-medium', 'border-amber-500 bg-amber-50 text-amber-900 font-medium', 'border-pink-500 bg-pink-50 text-pink-900 font-medium', 'border-sky-400 bg-sky-950/40 text-sky-200 font-medium', 'border-emerald-500 bg-emerald-50 text-emerald-900 font-medium', 'border-[#D7B399] bg-[#362924] text-[#F5EBE6] font-medium', 'border-[#C62828] bg-rose-50 text-[#9A1B24] font-medium')
+                      : t('border-gray-700 bg-[#1E2125] text-gray-300 hover:bg-[#33363B]', 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100', 'border-pink-200 bg-pink-50/50 text-pink-700 hover:bg-pink-100', 'border-[#253652] bg-[#0B132B] text-blue-200 hover:bg-[#162238]', 'border-emerald-200 bg-emerald-50/50 text-emerald-800 hover:bg-emerald-100', 'border-[#3E2F2A] bg-[#16110F] text-[#D7B399] hover:bg-[#221A17]', 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100')
+                  }`}>
+                    <input
+                      type="radio"
+                      name="startType"
+                      checked={startType === 'current'}
+                      onChange={() => setStartType('current')}
+                      className="accent-amber-600"
+                    />
+                    <span className="text-[16px] sm:text-sm">Моё текущее местоположение</span>
+                  </label>
+
+                  <label className={`min-h-[48px] px-3 py-2 rounded-xl border flex items-center gap-2 cursor-pointer transition-colors ${
+                    startType === 'custom' 
+                      ? t('border-[#FFB300] bg-[#FFB300]/15 text-[#FFB300] font-medium', 'border-amber-500 bg-amber-50 text-amber-900 font-medium', 'border-pink-500 bg-pink-50 text-pink-900 font-medium', 'border-sky-400 bg-sky-950/40 text-sky-200 font-medium', 'border-emerald-500 bg-emerald-50 text-emerald-900 font-medium', 'border-[#D7B399] bg-[#362924] text-[#F5EBE6] font-medium', 'border-[#C62828] bg-rose-50 text-[#9A1B24] font-medium')
+                      : t('border-gray-700 bg-[#1E2125] text-gray-300 hover:bg-[#33363B]', 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100', 'border-pink-200 bg-pink-50/50 text-pink-700 hover:bg-pink-100', 'border-[#253652] bg-[#0B132B] text-blue-200 hover:bg-[#162238]', 'border-emerald-200 bg-emerald-50/50 text-emerald-800 hover:bg-emerald-100', 'border-[#3E2F2A] bg-[#16110F] text-[#D7B399] hover:bg-[#221A17]', 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100')
+                  }`}>
+                    <input
+                      type="radio"
+                      name="startType"
+                      checked={startType === 'custom'}
+                      onChange={() => setStartType('custom')}
+                      className="accent-amber-600"
+                    />
+                    <span className="text-[16px] sm:text-sm">Указать адрес старта</span>
+                  </label>
+                </div>
+
+                {/* Поле ввода своего адреса старта */}
+                {startType === 'custom' && (
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      value={customStart}
+                      onChange={(e) => setCustomStart(e.target.value)}
+                      placeholder="Введите адрес начала маршрута (например: Москва, склад)..."
+                      className={`w-full min-h-[48px] px-3 py-2 rounded-lg border text-[16px] sm:text-sm focus:outline-none ${t('bg-[#282B30] border-gray-700 text-white focus:border-[#FFB300]', 'bg-white border-slate-300 text-slate-900 focus:border-amber-500', 'bg-white border-pink-200 text-pink-950 focus:border-pink-500', 'bg-[#162032] border-[#253652] text-blue-50 focus:border-sky-400', 'bg-white border-emerald-200 text-emerald-950 focus:border-emerald-600', 'bg-[#241C19] border-[#3E2F2A] text-[#F5EBE6] focus:border-[#D7B399]', 'bg-white border-slate-300 text-slate-900 focus:border-[#C62828]')}`}
+                    />
+                  </div>
+                )}
+
+                {/* Чекбокс возврата в точку старта (скрывается, если старт "Нет") */}
+                {startType !== 'none' && (
+                  <div>
+                    <label className={`min-h-[48px] px-3 py-2 rounded-xl border flex items-center gap-2.5 cursor-pointer transition-colors ${t('border-gray-700 bg-[#1E2125] hover:bg-[#33363B] text-gray-200', 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700', 'border-pink-200 bg-pink-50/50 hover:bg-pink-100 text-pink-800', 'border-[#253652] bg-[#0B132B] hover:bg-[#162238] text-blue-100', 'border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100 text-emerald-800', 'border-[#3E2F2A] bg-[#16110F] hover:bg-[#221A17] text-[#F5EBE6]', 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700')}`}>
+                      <input
+                        type="checkbox"
+                        checked={returnToStart}
+                        onChange={(e) => setReturnToStart(e.target.checked)}
+                        className="w-5 h-5 accent-amber-600 rounded cursor-pointer"
+                      />
+                      <span className="text-[16px] sm:text-sm select-none">
+                        Вернуться в точку старта в конце маршрута
+                      </span>
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Блок "Исходный текст распознавания" */}
+              {rawOcrText && (
+                <div className={`mt-4 pt-4 border-t ${t('border-gray-700', 'border-slate-200', 'border-pink-200', 'border-[#253652]', 'border-emerald-200', 'border-[#3E2F2A]', 'border-slate-200')}`}>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowRawText(!showRawText)}
+                      className={`min-h-[48px] px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors flex-1 ${t('bg-[#1E2125] hover:bg-[#33363B] text-gray-200', 'bg-slate-100 hover:bg-slate-200 text-slate-800', 'bg-pink-100 hover:bg-pink-200 text-pink-800', 'bg-[#162238] hover:bg-[#1E3A5F] text-blue-100', 'bg-emerald-100 hover:bg-emerald-200 text-emerald-900', 'bg-[#221A17] hover:bg-[#382B26] text-[#F5EBE6]', 'bg-slate-100 hover:bg-slate-200 text-slate-800')}`}
+                    >
+                      <span>{showRawText ? '▼' : '►'}</span>
+                      <span>Исходный текст распознавания ({rawOcrText.length} симв.)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(rawOcrText);
+                        setCopiedRawText(true);
+                        setTimeout(() => setCopiedRawText(false), 2000);
+                      }}
+                      className={`min-h-[48px] px-3 py-2 rounded-xl border text-xs font-medium flex items-center gap-1.5 transition-colors flex-shrink-0 ${t('border-gray-700 bg-[#1E2125] hover:bg-[#33363B] text-gray-200', 'border-slate-300 bg-white hover:bg-slate-50 text-slate-700', 'border-pink-200 bg-white hover:bg-pink-50 text-pink-700', 'border-[#253652] bg-[#162032] hover:bg-[#1E3A5F] text-blue-100', 'border-emerald-200 bg-white hover:bg-emerald-50 text-emerald-800', 'border-[#3E2F2A] bg-[#241C19] hover:bg-[#382B26] text-[#F5EBE6]', 'border-slate-300 bg-white hover:bg-slate-50 text-slate-700')}`}
+                      title="Скопировать весь текст OCR"
+                    >
+                      <span>{copiedRawText ? '✓ Скопировано' : '📋 Копировать'}</span>
+                    </button>
+                  </div>
+
+                  {showRawText && (
+                    <div className="mt-2">
+                      <textarea
+                        readOnly
+                        value={rawOcrText}
+                        rows={7}
+                        className={`w-full p-2.5 rounded-lg border text-[16px] sm:text-xs font-mono ${t('border-gray-700 bg-[#1E2125] text-gray-200', 'border-slate-200 bg-slate-50 text-slate-800', 'border-pink-200 bg-pink-50/50 text-pink-900', 'border-[#253652] bg-[#0B132B] text-blue-100', 'border-emerald-200 bg-emerald-50/50 text-emerald-900', 'border-[#3E2F2A] bg-[#16110F] text-[#F5EBE6]', 'border-slate-200 bg-slate-50 text-slate-800')}`}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* 4. Плавающая главная кнопка "Открыть маршрут в Яндекс Картах" */}
+            <footer className={`fixed bottom-0 left-0 right-0 backdrop-blur-md border-t px-3 sm:px-4 py-2.5 z-40 transition-colors ${t('bg-[#101112]/95 border-gray-800', 'bg-white/95 border-slate-200', 'bg-white/95 border-pink-200', 'bg-[#0B132B]/95 border-[#253652]', 'bg-white/95 border-emerald-200', 'bg-[#16110F]/95 border-[#3E2F2A]', 'bg-white/95 border-slate-200')}`}>
+              <div className="max-w-[680px] mx-auto">
+                <button
+                  type="button"
+                  onClick={handleOpenYandexMaps}
+                  disabled={points.length === 0}
+                  className="w-full min-h-[48px] py-3.5 px-4 rounded-xl font-bold text-base sm:text-lg flex items-center justify-center gap-2.5 shadow-md active:scale-[0.99] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: '#FFCC00', color: '#000000' }}
+                >
+                  <span>Открыть маршрут в Яндекс Картах</span>
+                  <span className="bg-black/10 text-black text-xs px-2 py-0.5 rounded-full font-extrabold ml-1">
+                    {points.length} {points.length === 1 ? 'точка' : points.length >= 2 && points.length <= 4 ? 'точки' : 'точек'}
+                  </span>
+                </button>
+              </div>
+            </footer>
+
+          </div>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

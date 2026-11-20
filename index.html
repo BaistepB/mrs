@@ -114,10 +114,13 @@
       { id: 'exp_4', name: 'Эксперт 4', color: '#9333ea', points: [] }
     ];
 
-    // Кэш геокодирования адресов (только валидные координаты { lat, lon })
+    // Ключ прямого доступа к API Яндекс Геокодера
+    const YANDEX_GEOCODER_KEY = '5dbd5740-ad6f-4e62-8b50-32233ed62dc4';
+
+    // Кэш геокодирования адресов Яндекс Геокодера (только валидные координаты { lat, lon })
     function getGeoCache() {
       try {
-        const saved = localStorage.getItem('expert_route_geo_cache');
+        const saved = localStorage.getItem('expert_route_geo_cache_yandex_v1');
         if (!saved) return {};
         const parsed = JSON.parse(saved);
         if (typeof parsed !== 'object' || parsed === null) return {};
@@ -140,11 +143,11 @@
             toSave[k] = { lat: v.lat, lon: v.lon };
           }
         }
-        localStorage.setItem('expert_route_geo_cache', JSON.stringify(toSave));
+        localStorage.setItem('expert_route_geo_cache_yandex_v1', JSON.stringify(toSave));
       } catch (e) {}
     }
 
-    // Нормализация адреса перед геокодированием: удаление хвостов и раскрытие сокращений
+    // Нормализация адреса перед геокодированием: удаление хвостов (этажи, квартиры, офисы)
     function normalizeAddressForGeocoder(rawAddress) {
       if (!rawAddress) return '';
       let s = rawAddress.trim();
@@ -165,11 +168,7 @@
       s = s.replace(/\bтуп\.?\b/gi, 'тупик');
       s = s.replace(/\bобл\.?\b/gi, 'область');
 
-      // 3. Убираем лишние префиксы г., д. (оставляя название города и номер дома)
-      s = s.replace(/(?:^|[,\s])г\.?\s+([А-ЯЁа-яё])/g, ' $1');
-      s = s.replace(/(?:^|[,\s])(?:д|дом)\.?\s*(\d+)/gi, ', $1');
-
-      // 4. Очистка лишних знаков препинания и множественных пробелов
+      // 3. Очистка лишних знаков препинания и множественных пробелов
       s = s
         .replace(/\s*,\s*/g, ', ')
         .replace(/,+/g, ',')
@@ -180,89 +179,42 @@
       return s;
     }
 
-    // Отсечение корпуса и строения для повторного запроса, если они мешают поиску
-    function removeCorpAndBuilding(addr) {
-      if (!addr) return '';
-      return addr
-        .replace(/,?\s*(?:корп|корпус|к|строение|стр)\.?\s*[\dа-яёА-ЯЁ\/-]*.*/gi, '')
-        .replace(/[,\s]+$/, '')
-        .trim();
-    }
-
-    // Каскадное геокодирование адреса (Photon Komoot OSM -> без корпуса -> Nominatim)
+    // Геокодирование через прямой API Яндекс Геокодера
     async function geocodeAddress(rawAddr, cache) {
       if (!rawAddr || !rawAddr.trim()) return null;
       const clean = rawAddr.trim();
       if (cache[clean]) return cache[clean];
 
-      const normAddr = normalizeAddressForGeocoder(clean);
-      if (!normAddr) return null;
+      const normAddr = normalizeAddressForGeocoder(clean) || clean;
 
       const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-      // 1. Поиск через Photon Komoot OSM с гео-приоритетом Москвы и МО (быстрый и точный)
-      const searchPhoton = async (q) => {
+      const queryYandex = async (address) => {
         try {
-          await delay(250);
-          const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1&lat=55.7558&lon=37.6173`;
+          await delay(150);
+          const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${YANDEX_GEOCODER_KEY}&geocode=${encodeURIComponent(address)}&format=json&results=1&ll=37.6173,55.7558&spn=2.5,2.5`;
           const res = await fetch(url);
           if (!res.ok) return null;
           const data = await res.json();
-          const coords = data?.features?.[0]?.geometry?.coordinates;
-          if (Array.isArray(coords) && coords.length >= 2) {
-            const lon = parseFloat(coords[0]);
-            const lat = parseFloat(coords[1]);
+          const pos = data?.response?.GeoObjectCollection?.featureMember?.[0]?.GeoObject?.Point?.pos;
+          if (pos && typeof pos === 'string') {
+            const [lon, lat] = pos.split(' ').map(Number);
             if (!isNaN(lat) && !isNaN(lon)) {
               return { lat, lon };
             }
           }
         } catch (e) {
-          console.warn('Ошибка Photon геокодирования:', q, e);
+          console.warn('Ошибка запроса к Яндекс Геокодеру:', address, e);
         }
         return null;
       };
 
-      // 2. Резервный поиск через Nominatim OSM
-      const searchNominatim = async (q) => {
-        try {
-          await delay(1100);
-          const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(q)}`;
-          const res = await fetch(url, { headers: { 'Accept-Language': 'ru' } });
-          if (!res.ok) return null;
-          const list = await res.json();
-          if (Array.isArray(list) && list.length > 0) {
-            const lat = parseFloat(list[0].lat);
-            const lon = parseFloat(list[0].lon);
-            if (!isNaN(lat) && !isNaN(lon)) {
-              return { lat, lon };
-            }
-          }
-        } catch (e) {
-          console.warn('Ошибка Nominatim геокодирования:', q, e);
-        }
-        return null;
-      };
+      // 1. Сначала пробуем нормализованный адрес (без этажей и квартир)
+      let coords = await queryYandex(normAddr);
 
-      // Шаг 1: Быстрый поиск нормализованного адреса в Photon
-      let coords = await searchPhoton(normAddr);
-
-      // Шаг 2: Если корпус/строение мешают поиску, пробуем без них в Photon
-      const addrWithoutCorp = removeCorpAndBuilding(normAddr);
-      if (!coords && addrWithoutCorp && addrWithoutCorp !== normAddr) {
-        coords = await searchPhoton(addrWithoutCorp);
-      }
-
-      // Если адрес без указания города/региона, пробуем с префиксом "Москва" в Photon
-      if (!coords && !/(москва|обл|санкт|петербург)/i.test(normAddr)) {
-        coords = await searchPhoton('Москва, ' + (addrWithoutCorp || normAddr));
-      }
-
-      // Шаг 3: Резервный поиск через Nominatim (если Photon не нашёл)
-      if (!coords) {
-        coords = await searchNominatim(addrWithoutCorp || normAddr);
-      }
-      if (!coords && !/(москва|обл|санкт|петербург)/i.test(normAddr)) {
-        coords = await searchNominatim('Москва, ' + (addrWithoutCorp || normAddr));
+      // 2. Если не найден, пробуем исходный адрес
+      if (!coords && normAddr !== clean) {
+        coords = await queryYandex(clean);
       }
 
       // Сохраняем в кэш только успешно найденные координаты

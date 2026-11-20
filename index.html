@@ -117,10 +117,10 @@
     // Ключ прямого доступа к API Яндекс Геокодера
     const YANDEX_GEOCODER_KEY = '5dbd5740-ad6f-4e62-8b50-32233ed62dc4';
 
-    // Кэш геокодирования адресов Яндекс Геокодера (только валидные координаты { lat, lon })
+    // Кэш геокодирования адресов Яндекс Геокодера v3 (только валидные координаты { lat, lon })
     function getGeoCache() {
       try {
-        const saved = localStorage.getItem('expert_route_geo_cache_yandex_v2');
+        const saved = localStorage.getItem('expert_route_geo_cache_yandex_v3');
         if (!saved) return {};
         const parsed = JSON.parse(saved);
         if (typeof parsed !== 'object' || parsed === null) return {};
@@ -143,21 +143,22 @@
             toSave[k] = { lat: v.lat, lon: v.lon };
           }
         }
-        localStorage.setItem('expert_route_geo_cache_yandex_v2', JSON.stringify(toSave));
+        localStorage.setItem('expert_route_geo_cache_yandex_v3', JSON.stringify(toSave));
       } catch (e) {}
     }
 
-    // Геокодирование через прямой API Яндекс Геокодера (исходный адрес без искажения сокращений)
-    async function geocodeAddress(rawAddr, cache) {
-      if (!rawAddr || !rawAddr.trim()) return null;
-      const clean = rawAddr.trim();
-      if (cache[clean]) return cache[clean];
+    // Прямое геокодирование адреса через Яндекс Геокодер (без предварительной чистки и искажения сокращений)
+    async function geocodeAddressYandex(rawAddress, cache) {
+      if (!rawAddress || !rawAddress.trim()) return null;
+      const clean = rawAddress.trim();
+      const currentCache = cache || getGeoCache();
+      if (currentCache[clean]) return currentCache[clean];
 
       const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
       try {
-        await delay(150);
-        const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${YANDEX_GEOCODER_KEY}&geocode=${encodeURIComponent(clean)}&format=json&results=1&ll=37.6173,55.7558&spn=2.5,2.5`;
+        await delay(200);
+        const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${YANDEX_GEOCODER_KEY}&geocode=${encodeURIComponent(clean)}&format=json&results=1&ll=37.6173,55.7558&spn=3.0,3.0`;
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
@@ -166,18 +167,19 @@
             const [lon, lat] = pos.split(' ').map(Number);
             if (!isNaN(lat) && !isNaN(lon)) {
               const coords = { lat, lon };
-              cache[clean] = coords;
-              saveGeoCache(cache);
+              currentCache[clean] = coords;
+              saveGeoCache(currentCache);
               return coords;
             }
           }
         }
       } catch (e) {
-        console.warn('Ошибка запроса к Яндекс Геокодеру:', clean, e);
+        console.warn('Ошибка Яндекс Геокодера:', clean, e);
       }
 
       return null;
     }
+    const geocodeAddress = geocodeAddressYandex;
 
     function parseAddresses(rawText) {
       const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
@@ -852,7 +854,7 @@
               if (!coords) {
                 progressCount++;
                 setGeocodingStatus(`Поиск координат (${progressCount} из ${totalToFetch}): ${cleanAddr.substring(0, 30)}...`);
-                coords = await geocodeAddress(cleanAddr, geoCache);
+                coords = await geocodeAddressYandex(cleanAddr, geoCache);
               }
 
               if (coords) {
@@ -1637,6 +1639,69 @@
                        theme === 'pink' ? 'РОЗОВАЯ' : 'МЯТНАЯ'}
                     </span>
                   </button>
+                </div>
+
+                {/* Раздел: Управление данными */}
+                <div className={`mt-4 pt-4 border-t ${t('border-gray-700', 'border-gray-200', 'border-pink-200', 'border-blue-200', 'border-emerald-200', 'border-[#D7CCC8]', 'border-gray-200')}`}>
+                  <h4 className={`text-xs font-bold uppercase tracking-wider mb-2.5 ${t('text-gray-400', 'text-slate-500', 'text-pink-600', 'text-blue-300', 'text-emerald-700', 'text-[#D7B399]', 'text-slate-500')}`}>
+                    Управление данными
+                  </h4>
+                  <div className="space-y-2">
+                    {/* Кнопка сброса кэша координат карты */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          const keysToRemove = [];
+                          for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            if (key && key.includes('geo_cache')) {
+                              keysToRemove.push(key);
+                            }
+                          }
+                          keysToRemove.forEach(k => localStorage.removeItem(k));
+                          alert('Кэш координат карты успешно очищен! При следующем открытии карты все адреса будут запрошены заново.');
+                        } catch (e) {
+                          console.warn('Ошибка очистки кэша координат:', e);
+                        }
+                      }}
+                      className={`w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${t(
+                        'bg-[#1E2125] border-gray-700 text-gray-200 hover:bg-[#33363B]',
+                        'bg-slate-50 border-slate-300 text-slate-800 hover:bg-slate-100',
+                        'bg-pink-50 border-pink-200 text-pink-800 hover:bg-pink-100',
+                        'bg-[#162032] border-[#253652] text-blue-100 hover:bg-[#1E3A5F]',
+                        'bg-emerald-50 border-emerald-200 text-emerald-900 hover:bg-emerald-100',
+                        'bg-[#221A17] border-[#3E2F2A] text-[#F5EBE6] hover:bg-[#382B26]',
+                        'bg-slate-50 border-slate-300 text-slate-800 hover:bg-slate-100'
+                      )}`}
+                    >
+                      <span>🔄</span>
+                      <span>Сбросить кэш координат карты</span>
+                    </button>
+
+                    {/* Кнопка полного сброса приложения */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm('Удалить все сохранённые точки, имена вкладок и настройки?')) {
+                          localStorage.clear();
+                          window.location.reload();
+                        }
+                      }}
+                      className={`w-full min-h-[48px] px-3.5 py-2.5 rounded-xl border text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-all shadow-sm ${t(
+                        'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
+                        'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
+                        'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
+                        'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
+                        'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200',
+                        'bg-rose-500/15 border-rose-500/30 text-rose-400 hover:bg-rose-500/25 active:bg-rose-500/35',
+                        'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 active:bg-rose-200'
+                      )}`}
+                    >
+                      <span>⚠️</span>
+                      <span>Полный сброс приложения</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-4 flex justify-end">
